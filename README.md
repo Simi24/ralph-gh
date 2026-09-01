@@ -54,6 +54,8 @@ cd ralph-gh
 echo 'alias ralph-gh="$HOME/.claude/ralph-gh/ralph-gh.sh"' >> ~/.zshrc
 ```
 
+The installer also registers a `/ralph-gh` skill, so inside an interactive Claude Code session you can type `/ralph-gh --autonomy=... --max-iterations=...` and have the session drive the orchestrator for you.
+
 Requires: `claude` (Claude Code CLI), `gh` (authenticated), `jq`, bash 4+.
 
 ## Per-repo setup (one time)

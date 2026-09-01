@@ -22,10 +22,15 @@ for f in "$SRC"/agents/*.md; do
   cp "$f" "$AGENTS/"
 done
 
+SKILLS="$HOME/.claude/skills"
+mkdir -p "$SKILLS/ralph-gh"
+cp "$SRC/skills/ralph-gh/SKILL.md" "$SKILLS/ralph-gh/SKILL.md"
+
 echo ""
 echo "Installed:"
 echo "  orchestrator -> $DEST"
 echo "  agents       -> $AGENTS (ralph-refactorer, ralph-gate-reviewer)"
+echo "  skill        -> $SKILLS/ralph-gh (/ralph-gh inside Claude Code sessions)"
 echo ""
 echo "Optional alias:"
 echo "  echo 'alias ralph-gh=\"\$HOME/.claude/ralph-gh/ralph-gh.sh\"' >> ~/.zshrc"
