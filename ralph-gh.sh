@@ -194,6 +194,14 @@ fi
 
 SESSION_ID="ralph-$(date +%s)"
 
+# Session-scoped record of issues this run actually acted on (label change,
+# lease/gate/reconcile comment). label_watcher runs as a background job, so
+# this has to be a file, not an array: array writes in a `&` subshell never
+# propagate back to the parent shell.
+TOUCHED_ISSUES_FILE="$STATE_DIR/touched-issues.$SESSION_ID.txt"
+: > "$TOUCHED_ISSUES_FILE"
+track_issue() { echo "$1" >> "$TOUCHED_ISSUES_FILE"; }
+
 WATCHER_PID=""
 cleanup() { [[ -n "$WATCHER_PID" ]] && kill "$WATCHER_PID" 2>/dev/null || true; }
 trap cleanup EXIT INT TERM
@@ -215,6 +223,7 @@ label_watcher() {
     if [[ "$labels" == *"ralph:queued"* && "$labels" != *"ralph:in-progress"* ]]; then
       gh issue edit "$issue" --remove-label "ralph:queued" --add-label "ralph:in-progress" >/dev/null 2>&1 || true
       gh issue comment "$issue" --body "🤖 ralph-gh lease acquired @ $(date -Iseconds) — session $SESSION_ID iter $ITERATION (auto-claimed by orchestrator watcher)" >/dev/null 2>&1 || true
+      track_issue "$issue"
       echo "[watcher] auto-claimed issue #$issue (label swap was skipped by the session)" | tee -a "$LOG_FILE"
     fi
   done
@@ -317,6 +326,7 @@ reconcile_needs_review_issue() {
   if [[ -n "$merged_pr" ]]; then
     if gh issue edit "$issue" --remove-label "ralph:needs-review" --remove-label "ralph:in-progress" --add-label "ralph:done" 2>>"$LOG_FILE"; then
       gh issue comment "$issue" --body "🤖 reconcile: PR #$merged_pr was merged outside the orchestrator's gate. Relabeling \`ralph:done\`." >/dev/null 2>&1 || true
+      track_issue "$issue"
       echo "[reconcile] issue #$issue — orphaned ralph:needs-review, PR #$merged_pr already merged -> ralph:done" | tee -a "$LOG_FILE"
     else
       echo "[reconcile] issue #$issue — relabel to ralph:done failed, left as-is" | tee -a "$LOG_FILE"
@@ -328,6 +338,7 @@ reconcile_needs_review_issue() {
   if [[ -n "$closed_pr" ]]; then
     if gh issue edit "$issue" --remove-label "ralph:needs-review" --remove-label "ralph:in-progress" --add-label "ralph:queued" 2>>"$LOG_FILE"; then
       gh issue comment "$issue" --body "🤖 reconcile: PR #$closed_pr was closed without merging. Relabeling \`ralph:queued\` for retry." >/dev/null 2>&1 || true
+      track_issue "$issue"
       echo "[reconcile] issue #$issue — orphaned ralph:needs-review, PR #$closed_pr closed unmerged -> ralph:queued" | tee -a "$LOG_FILE"
     else
       echo "[reconcile] issue #$issue — relabel to ralph:queued failed, left as-is" | tee -a "$LOG_FILE"
@@ -354,6 +365,7 @@ reconcile_gate_passed_issue() {
 
   if gh issue edit "$issue" --remove-label "ralph:gate-passed" --remove-label "ralph:in-progress" --add-label "ralph:done" 2>>"$LOG_FILE"; then
     gh issue comment "$issue" --body "🤖 reconcile: PR #$merged_pr was merged by a human. Relabeling \`ralph:done\`." >/dev/null 2>&1 || true
+    track_issue "$issue"
     echo "[reconcile] issue #$issue — ralph:gate-passed PR #$merged_pr merged by a human -> ralph:done" | tee -a "$LOG_FILE"
   else
     echo "[reconcile] issue #$issue — relabel to ralph:done failed, left as-is" | tee -a "$LOG_FILE"
@@ -411,6 +423,7 @@ run_external_gates() {
       echo "[gate] PR #$pr skipped (issue #$issue is not ralph:needs-review)" | tee -a "$LOG_FILE"
       continue
     fi
+    track_issue "$issue"
 
     # Autonomy decides whether a PASS may auto-merge; the gate itself always runs.
     can_merge=1; withheld_reason=""
@@ -587,6 +600,14 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
 
   tail -50 "$ITER_OUTPUT" | tee -a "$LOG_FILE"
 
+  # Record the issue the session worked on this iteration (if any), so the
+  # final report reflects this session's actual work even when the PR never
+  # reaches run_external_gates below (e.g. an issue-specific verify failure).
+  iter_branch=$(git -C "$REPO_ROOT" branch --show-current 2>/dev/null) || true
+  if [[ "$iter_branch" =~ issue-([0-9]+) ]]; then
+    track_issue "${BASH_REMATCH[1]}"
+  fi
+
   # Binding review gate + merge — deterministic, not skippable by the session.
   run_external_gates
 
@@ -614,11 +635,20 @@ done
   echo "- Ended: $(date -Iseconds)"
   echo ""
   echo "## Issues touched this session"
-  for lbl in ralph:in-progress ralph:needs-review ralph:gate-passed ralph:failed:issue ralph:failed:systemic ralph:done; do
-    gh issue list --label "$lbl" --state all --limit 50 \
-      --json number,title,labels \
-      --jq '.[] | "- #\(.number) \(.title) [\(.labels | map(.name) | join(","))]"' 2>/dev/null || true
-  done | sort -u
+  # Session-scoped, from $TOUCHED_ISSUES_FILE (recorded live as the run acted
+  # on each issue) — NOT a global label sweep. A global sweep would list
+  # every issue ever labeled ralph:* across every past run (ralph:done is
+  # never removed, so it only grows) and silently truncate past --limit.
+  if [[ -s "$TOUCHED_ISSUES_FILE" ]]; then
+    while read -r touched_issue; do
+      [[ -z "$touched_issue" ]] && continue
+      gh issue view "$touched_issue" --json number,title,labels \
+        --jq '"- #\(.number) \(.title) [\(.labels | map(.name) | join(","))]"' 2>/dev/null \
+        || echo "- #$touched_issue (could not fetch current state)"
+    done < <(sort -un "$TOUCHED_ISSUES_FILE")
+  else
+    echo "(none)"
+  fi
 } >> "$LAST_RUN"
 
 echo ""
