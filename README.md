@@ -56,7 +56,7 @@ echo 'alias ralph-gh="$HOME/.claude/ralph-gh/ralph-gh.sh"' >> ~/.zshrc
 
 The installer also registers a `/ralph-gh` skill, so inside an interactive Claude Code session you can type `/ralph-gh --autonomy=... --max-iterations=...` and have the session drive the orchestrator for you.
 
-Requires: `claude` (Claude Code CLI), `gh` (authenticated, with push and label rights on the repo), `jq`, `curl`, bash 3.2+.
+Requires: `claude` (Claude Code CLI), `gh` (authenticated as a collaborator with **push** and **triage** permission — or higher, e.g. maintain/admin — on the repo, so it can push branches, merge PRs, and create/edit `ralph:*` labels), `jq`, `curl`, bash 3.2+. The orchestrator checks this for real at startup (`gh api repos/{owner}/{repo} --jq .permissions`) and exits before spawning any session if either is missing.
 
 ## Per-repo setup (one time)
 
