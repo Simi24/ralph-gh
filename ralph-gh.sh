@@ -444,8 +444,8 @@ run_external_gates() {
     round=0; verdict="FAIL"
     while true; do
       round=$((round + 1))
-      local gate_in="$STATE_DIR/gate-pr$pr-round$round.input.md"
-      local gate_out="$STATE_DIR/gate-pr$pr-round$round.output.txt"
+      local gate_in="$STATE_DIR/gate-pr$pr-round$round.$SESSION_ID.input.md"
+      local gate_out="$STATE_DIR/gate-pr$pr-round$round.$SESSION_ID.output.txt"
       cat > "$gate_in" <<EOF
 You are the EXTERNAL review gate (arbiter tier) of a ralph-gh loop. Repo: $REPO_ROOT. Evaluate PR #$pr (branch \`$branch\`, base \`$RALPH_DEFAULT_BASE_BRANCH\`) for issue #$issue.
 
@@ -470,8 +470,8 @@ EOF
       fi
       [[ $round -gt $RALPH_GATE_FIX_ROUNDS ]] && break
 
-      local fix_in="$STATE_DIR/fix-pr$pr-round$round.input.md"
-      local fix_out="$STATE_DIR/fix-pr$pr-round$round.output.txt"
+      local fix_in="$STATE_DIR/fix-pr$pr-round$round.$SESSION_ID.input.md"
+      local fix_out="$STATE_DIR/fix-pr$pr-round$round.$SESSION_ID.output.txt"
       cat > "$fix_in" <<EOF
 You are a FIX session of a ralph-gh loop. The external gate FAILED PR #$pr (branch \`$branch\`, issue #$issue) in repo $REPO_ROOT.
 
@@ -545,8 +545,8 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   echo " iteration $ITERATION / $MAX_ITERATIONS"
   echo "================================================================="
 
-  ITER_INPUT="$STATE_DIR/iter-$ITERATION.input.md"
-  ITER_OUTPUT="$STATE_DIR/iter-$ITERATION.output.txt"
+  ITER_INPUT="$STATE_DIR/iter-$ITERATION.$SESSION_ID.input.md"
+  ITER_OUTPUT="$STATE_DIR/iter-$ITERATION.$SESSION_ID.output.txt"
 
   # Render verify commands and doc files into the prompt
   {
