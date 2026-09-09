@@ -79,6 +79,31 @@ for cmd in claude gh jq curl; do
 done
 if ! gh auth status >/dev/null 2>&1; then echo "gh not authenticated" >&2; exit 1; fi
 
+# `gh auth status` only proves the token is valid, not that it can act on THIS
+# repo. Without push + label (triage) rights every `gh issue edit`/`gh pr merge`
+# in the loop below fails silently and the board never updates — check for real,
+# before spawning any session. A plain GET, so it leaves no artifacts behind.
+REPO_NWO="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)"
+if [[ -z "$REPO_NWO" ]]; then
+  echo "could not resolve the current repo via 'gh repo view'. aborting." >&2
+  exit 1
+fi
+REPO_PERMS="$(gh api "repos/$REPO_NWO" --jq '.permissions // {}' 2>/dev/null)"
+if [[ -z "$REPO_PERMS" ]]; then
+  echo "could not read permissions for $REPO_NWO (gh api repos/$REPO_NWO failed). aborting." >&2
+  exit 1
+fi
+HAS_PUSH="$(jq -r '.push // false' <<<"$REPO_PERMS" 2>/dev/null)"
+HAS_TRIAGE="$(jq -r '.triage // false' <<<"$REPO_PERMS" 2>/dev/null)"
+if [[ "$HAS_PUSH" != "true" ]]; then
+  echo "missing push access on $REPO_NWO — the orchestrator needs write access to push branches and merge PRs. aborting." >&2
+  exit 1
+fi
+if [[ "$HAS_TRIAGE" != "true" ]]; then
+  echo "missing triage (label-management) access on $REPO_NWO — the orchestrator needs to create/edit ralph:* labels. aborting." >&2
+  exit 1
+fi
+
 STATE_DIR="$REPO_ROOT/.ralph-gh"
 LOG_FILE="$STATE_DIR/run.log"
 LAST_RUN="$STATE_DIR/last-run.md"

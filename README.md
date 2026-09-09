@@ -29,7 +29,7 @@ ralph:queued │  SELECT → CLAIM → CONTEXT → IMPLEMENT (TDD + ralph-refact
              └─────────────────────────────────────────────────────────────────────┘
 ```
 
-1. **Orchestrator** (`ralph-gh.sh`) does pre-flight checks (clean tree, on base branch, deps, labels, infra health) and loops.
+1. **Orchestrator** (`ralph-gh.sh`) does pre-flight checks (clean tree, on base branch, deps, repo permissions, labels, infra health) and loops.
 2. **Each iteration** is a fresh `claude --dangerously-skip-permissions --print` session fed `CLAUDE.md` + per-repo runtime parameters. No context accumulates across iterations; persistence lives on GitHub.
 3. **Inside the iteration**: SELECT a queued issue with resolved deps → CLAIM (label swap + lease comment + branch) → CONTEXT (issue, parent PRD, shadow-read merged sibling PRs) → IMPLEMENT in TDD, spawning the `ralph-refactorer` agent after each red-green cycle → VERIFY (your commands, in order) → open the PR → run the **inner gate** (`ralph-gate-reviewer` agent) and fix its findings in-context → emit a `<promise>` signal and exit. **The session never merges.**
 4. **After the session exits**, the orchestrator runs the **external gate**: a fresh session spawns the same reviewer agent against the PR, posts the verdict as a `## Gate verdict` PR comment, and prints `GATE:PASS` or `GATE:FAIL` on its last line. PASS → the *script* merges (per autonomy mode). FAIL → the script spawns a focused fix session and re-gates, up to `RALPH_GATE_FIX_ROUNDS` times, then labels `ralph:failed:issue` for a human.
@@ -56,7 +56,7 @@ echo 'alias ralph-gh="$HOME/.claude/ralph-gh/ralph-gh.sh"' >> ~/.zshrc
 
 The installer also registers a `/ralph-gh` skill, so inside an interactive Claude Code session you can type `/ralph-gh --autonomy=... --max-iterations=...` and have the session drive the orchestrator for you.
 
-Requires: `claude` (Claude Code CLI), `gh` (authenticated, with push and label rights on the repo), `jq`, `curl`, bash 3.2+.
+Requires: `claude` (Claude Code CLI), `gh` (authenticated as a collaborator with **push** and **triage** permission — or higher, e.g. maintain/admin — on the repo, so it can push branches, merge PRs, and create/edit `ralph:*` labels), `jq`, `curl`, bash 3.2+. The orchestrator checks this for real at startup (`gh api repos/{owner}/{repo} --jq .permissions`) and exits before spawning any session if either is missing.
 
 ## Per-repo setup (one time)
 
