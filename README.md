@@ -68,7 +68,7 @@ $EDITOR .ralph-gh.config
 
 Fill in:
 - `RALPH_VERIFY_COMMANDS` — build/test commands, run in order every iteration (required)
-- `RALPH_PREFLIGHT_CMD` + `RALPH_PREFLIGHT_HEALTH_URL` — if the tests need infra (docker compose, LocalStack, …)
+- `RALPH_PREFLIGHT_CMD` + `RALPH_PREFLIGHT_HEALTH_URL` — if the tests need infra (docker compose, LocalStack, …); a failed command or a health check that never goes green aborts the run before any session is spawned
 - `RALPH_YOLO_ALLOWLIST` — regex of files allowed to auto-merge in `yolo` mode
 - `RALPH_DOC_FILES` — docs to update on public-API changes
 - `RALPH_BRANCH_PREFIX`, `RALPH_DEFAULT_BASE_BRANCH` — if your conventions differ
