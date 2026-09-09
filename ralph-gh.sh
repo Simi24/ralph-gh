@@ -204,7 +204,123 @@ run_claude_step() {
   return 0
 }
 
+# --- board reconciliation (self-healing tier) ---------------------------------
+# Two label states are dead ends if nothing else moves them along:
+#   ralph:needs-review — orphaned if its PR was closed/merged by a human,
+#     bypassing the gate (or its branch never matched issue-N to begin with:
+#     we resolve this by GitHub's own closing-keyword linkage, not branch
+#     names, so a mismatched branch is still found).
+#   ralph:gate-passed  — stuck forever if a human merges the withheld PR
+#     without telling the orchestrator.
+# Every check fails closed: a gh/jq failure is logged and the issue is left
+# untouched rather than guessing a transition.
+fetch_closing_prs() {
+  # $1 = issue number, $2 = owner, $3 = repo name.
+  # Prints a JSON array of {number, state, isCrossRepository} on success and
+  # returns 0. On any failure (including a GraphQL-level "errors" response,
+  # which `gh api` exits non-zero for but still prints raw JSON to stdout —
+  # never trust stdout alone) prints nothing and returns non-zero; callers
+  # must treat that as "unknown", never as "no linked PRs".
+  local out gh_exit
+  out=$(gh api graphql -f query='
+    query($o: String!, $n: String!, $i: Int!) {
+      repository(owner: $o, name: $n) {
+        issue(number: $i) {
+          closedByPullRequestsReferences(first: 20) {
+            nodes { number state isCrossRepository }
+          }
+        }
+      }
+    }' -f o="$2" -f n="$3" -F i="$1" \
+    --jq '.data.repository.issue.closedByPullRequestsReferences.nodes' 2>/dev/null)
+  gh_exit=$?
+  [[ $gh_exit -eq 0 ]] || return 1
+  printf '%s' "$out"
+}
+
+reconcile_needs_review_issue() {
+  local issue="$1" owner="$2" repo="$3"
+  local prs open_count merged_pr closed_pr
+  if ! prs=$(fetch_closing_prs "$issue" "$owner" "$repo"); then
+    echo "[reconcile] issue #$issue (ralph:needs-review) — could not fetch linked PRs, leaving as-is" | tee -a "$LOG_FILE"
+    return 0
+  fi
+
+  open_count=$(jq -r '[.[] | select(.state == "OPEN" and .isCrossRepository == false)] | length' <<< "$prs" 2>/dev/null) || {
+    echo "[reconcile] issue #$issue — could not parse linked PRs, leaving as-is" | tee -a "$LOG_FILE"
+    return 0
+  }
+  [[ "$open_count" -gt 0 ]] && return 0  # normal state: a same-repo PR is still open, the gate will process it
+
+  merged_pr=$(jq -r '[.[] | select(.state == "MERGED")][0].number // empty' <<< "$prs" 2>/dev/null)
+  if [[ -n "$merged_pr" ]]; then
+    if gh issue edit "$issue" --remove-label "ralph:needs-review" --add-label "ralph:done" 2>>"$LOG_FILE"; then
+      gh issue comment "$issue" --body "🤖 reconcile: PR #$merged_pr was merged outside the orchestrator's gate. Relabeling \`ralph:done\`." >/dev/null 2>&1 || true
+      echo "[reconcile] issue #$issue — orphaned ralph:needs-review, PR #$merged_pr already merged -> ralph:done" | tee -a "$LOG_FILE"
+    else
+      echo "[reconcile] issue #$issue — relabel to ralph:done failed, left as-is" | tee -a "$LOG_FILE"
+    fi
+    return 0
+  fi
+
+  closed_pr=$(jq -r '[.[] | select(.state == "CLOSED")][0].number // empty' <<< "$prs" 2>/dev/null)
+  if [[ -n "$closed_pr" ]]; then
+    if gh issue edit "$issue" --remove-label "ralph:needs-review" --add-label "ralph:queued" 2>>"$LOG_FILE"; then
+      gh issue comment "$issue" --body "🤖 reconcile: PR #$closed_pr was closed without merging. Relabeling \`ralph:queued\` for retry." >/dev/null 2>&1 || true
+      echo "[reconcile] issue #$issue — orphaned ralph:needs-review, PR #$closed_pr closed unmerged -> ralph:queued" | tee -a "$LOG_FILE"
+    else
+      echo "[reconcile] issue #$issue — relabel to ralph:queued failed, left as-is" | tee -a "$LOG_FILE"
+    fi
+    return 0
+  fi
+
+  echo "[reconcile] issue #$issue — ralph:needs-review with no linked PR found, leaving as-is for manual triage" | tee -a "$LOG_FILE"
+}
+
+reconcile_gate_passed_issue() {
+  local issue="$1" owner="$2" repo="$3"
+  local prs merged_pr
+  if ! prs=$(fetch_closing_prs "$issue" "$owner" "$repo"); then
+    echo "[reconcile] issue #$issue (ralph:gate-passed) — could not fetch linked PRs, leaving as-is" | tee -a "$LOG_FILE"
+    return 0
+  fi
+
+  merged_pr=$(jq -r '[.[] | select(.state == "MERGED")][0].number // empty' <<< "$prs" 2>/dev/null) || {
+    echo "[reconcile] issue #$issue — could not parse linked PRs, leaving as-is" | tee -a "$LOG_FILE"
+    return 0
+  }
+  [[ -z "$merged_pr" ]] && return 0  # still genuinely withheld, nothing to do
+
+  if gh issue edit "$issue" --remove-label "ralph:gate-passed" --add-label "ralph:done" 2>>"$LOG_FILE"; then
+    gh issue comment "$issue" --body "🤖 reconcile: PR #$merged_pr was merged by a human. Relabeling \`ralph:done\`." >/dev/null 2>&1 || true
+    echo "[reconcile] issue #$issue — ralph:gate-passed PR #$merged_pr merged by a human -> ralph:done" | tee -a "$LOG_FILE"
+  else
+    echo "[reconcile] issue #$issue — relabel to ralph:done failed, left as-is" | tee -a "$LOG_FILE"
+  fi
+}
+
+reconcile_board_states() {
+  local owner repo
+  owner=$(gh repo view --json owner --jq '.owner.login' 2>/dev/null) || { echo "[reconcile] could not determine repo owner, skipping this pass" | tee -a "$LOG_FILE"; return 0; }
+  repo=$(gh repo view --json name --jq '.name' 2>/dev/null) || { echo "[reconcile] could not determine repo name, skipping this pass" | tee -a "$LOG_FILE"; return 0; }
+
+  local issue issues
+  issues=$(gh issue list --label "ralph:needs-review" --state all --json number --jq '.[].number' 2>/dev/null) || issues=""
+  while read -r issue; do
+    [[ -z "$issue" ]] && continue
+    reconcile_needs_review_issue "$issue" "$owner" "$repo"
+  done <<< "$issues"
+
+  issues=$(gh issue list --label "ralph:gate-passed" --state all --json number --jq '.[].number' 2>/dev/null) || issues=""
+  while read -r issue; do
+    [[ -z "$issue" ]] && continue
+    reconcile_gate_passed_issue "$issue" "$owner" "$repo"
+  done <<< "$issues"
+}
+
 run_external_gates() {
+  reconcile_board_states
+
   local pr_list
   # Same-repo PRs only: a same-repo head branch requires push access, which is
   # the trust boundary. Fork PRs must NEVER enter this pipeline: gating or

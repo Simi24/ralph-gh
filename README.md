@@ -116,12 +116,14 @@ tmux new -s ralph 'cd /path/to/repo && caffeinate -dims ralph-gh --max-iteration
 |---|---|
 | `ralph:queued` | Ready to work, deps satisfied |
 | `ralph:in-progress` | Active iteration; stale > 10 min → released by the next session |
-| `ralph:needs-review` | PR open, awaiting the external gate (the gate only processes PRs in this state) |
-| `ralph:gate-passed` | External gate PASS, merge withheld for a human (hitl-arch, halt-each-pr, or yolo allowlist miss) |
+| `ralph:needs-review` | PR open, awaiting the external gate (the gate only processes PRs in this state). **Self-healing**: if a human closes or merges the PR outside the gate, the orchestrator's reconcile step relabels it (`ralph:done` if merged, `ralph:queued` to retry if closed unmerged) instead of leaving it stuck forever. |
+| `ralph:gate-passed` | External gate PASS, merge withheld for a human (hitl-arch, halt-each-pr, or yolo allowlist miss). **Self-healing**: if a human merges the withheld PR, the reconcile step relabels it `ralph:done`. |
 | `ralph:hitl-arch` (manual) | Architecturally sensitive, never auto-merge |
-| `ralph:done` | Merged by the orchestrator |
+| `ralph:done` | Merged by the orchestrator (or reconciled after a human merge) |
 | `ralph:failed:systemic` | Tooling/infra failure → loop stops |
 | `ralph:failed:issue` | Per-issue failure (including exhausted gate-fix rounds) → loop continues, PR left open but never re-processed |
+
+Reconciliation runs at the start of every gate pass (`reconcile_board_states`, before `run_external_gates`): it resolves the PR linked to an issue via GitHub's own closing-keyword linkage (not branch-name matching, so it still works even if the PR's branch never followed the `issue-N` convention), and fails closed — a `gh`/`jq` error is logged (`[reconcile]` prefix in `run.log`) and the issue is left untouched rather than guessing a transition.
 
 ## Stop signals (session → orchestrator)
 
