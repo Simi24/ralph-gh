@@ -151,6 +151,8 @@ The loop shines with these (not bundled — install them yourself, from [Matt Po
 
 ## Security — read this before an unattended run
 
+**Threat model first**: ralph-gh is designed for private repos, or repos where everyone with write access is trusted. Two things keep a public repo from being an open door — only issues labeled `ralph:queued` enter the loop (labeling requires triage access), and fork PRs never enter the gate pipeline — but issue bodies and PR comments written by anyone still reach your sessions as text. If you run it on a public repo, never label a stranger's issue without rewriting it in your own words, and prefer short supervised runs over overnight ones.
+
 Every session (iteration, gate, fix) runs with `--dangerously-skip-permissions` and your `gh` credentials: it can run any command your user can. Be clear about what is and is not enforced:
 
 - **Deterministic (bash):** which PRs enter the pipeline (same-repo branches whose issue is `ralph:needs-review` — fork PRs are excluded by design), verdict parsing (an unparsable verdict is a FAIL, never a PASS), the yolo allowlist check (fails closed if the diff cannot be fetched), the merge itself, session timeouts.
