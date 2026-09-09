@@ -123,7 +123,7 @@ tmux new -s ralph 'cd /path/to/repo && caffeinate -dims ralph-gh --max-iteration
 | `ralph:failed:systemic` | Tooling/infra failure → loop stops |
 | `ralph:failed:issue` | Per-issue failure (including exhausted gate-fix rounds) → loop continues, PR left open but never re-processed |
 
-Reconciliation runs at the start of every gate pass (`reconcile_board_states`, before `run_external_gates`): it resolves the PR linked to an issue via GitHub's own closing-keyword linkage (not branch-name matching, so it still works even if the PR's branch never followed the `issue-N` convention), and fails closed — a `gh`/`jq` error is logged (`[reconcile]` prefix in `run.log`) and the issue is left untouched rather than guessing a transition.
+Reconciliation runs at the start of every gate pass (`reconcile_board_states`, the first step inside `run_external_gates`): it resolves the PR linked to an issue via GitHub's own closing-keyword linkage (not branch-name matching, so it still works even if the PR's branch never followed the `issue-N` convention), and fails closed — a `gh`/`jq` error is logged (`[reconcile]` prefix in `run.log`) and the issue is left untouched rather than guessing a transition.
 
 ## Stop signals (session → orchestrator)
 

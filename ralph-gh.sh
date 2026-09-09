@@ -279,7 +279,7 @@ reconcile_needs_review_issue() {
 
   merged_pr=$(jq -r '[.[] | select(.state == "MERGED")][0].number // empty' <<< "$prs" 2>/dev/null)
   if [[ -n "$merged_pr" ]]; then
-    if gh issue edit "$issue" --remove-label "ralph:needs-review" --add-label "ralph:done" 2>>"$LOG_FILE"; then
+    if gh issue edit "$issue" --remove-label "ralph:needs-review" --remove-label "ralph:in-progress" --add-label "ralph:done" 2>>"$LOG_FILE"; then
       gh issue comment "$issue" --body "🤖 reconcile: PR #$merged_pr was merged outside the orchestrator's gate. Relabeling \`ralph:done\`." >/dev/null 2>&1 || true
       echo "[reconcile] issue #$issue — orphaned ralph:needs-review, PR #$merged_pr already merged -> ralph:done" | tee -a "$LOG_FILE"
     else
@@ -290,7 +290,7 @@ reconcile_needs_review_issue() {
 
   closed_pr=$(jq -r '[.[] | select(.state == "CLOSED")][0].number // empty' <<< "$prs" 2>/dev/null)
   if [[ -n "$closed_pr" ]]; then
-    if gh issue edit "$issue" --remove-label "ralph:needs-review" --add-label "ralph:queued" 2>>"$LOG_FILE"; then
+    if gh issue edit "$issue" --remove-label "ralph:needs-review" --remove-label "ralph:in-progress" --add-label "ralph:queued" 2>>"$LOG_FILE"; then
       gh issue comment "$issue" --body "🤖 reconcile: PR #$closed_pr was closed without merging. Relabeling \`ralph:queued\` for retry." >/dev/null 2>&1 || true
       echo "[reconcile] issue #$issue — orphaned ralph:needs-review, PR #$closed_pr closed unmerged -> ralph:queued" | tee -a "$LOG_FILE"
     else
@@ -316,7 +316,7 @@ reconcile_gate_passed_issue() {
   }
   [[ -z "$merged_pr" ]] && return 0  # still genuinely withheld, nothing to do
 
-  if gh issue edit "$issue" --remove-label "ralph:gate-passed" --add-label "ralph:done" 2>>"$LOG_FILE"; then
+  if gh issue edit "$issue" --remove-label "ralph:gate-passed" --remove-label "ralph:in-progress" --add-label "ralph:done" 2>>"$LOG_FILE"; then
     gh issue comment "$issue" --body "🤖 reconcile: PR #$merged_pr was merged by a human. Relabeling \`ralph:done\`." >/dev/null 2>&1 || true
     echo "[reconcile] issue #$issue — ralph:gate-passed PR #$merged_pr merged by a human -> ralph:done" | tee -a "$LOG_FILE"
   else
