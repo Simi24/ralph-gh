@@ -94,7 +94,7 @@ if [[ -z "$REPO_PERMS" ]]; then
   exit 1
 fi
 HAS_PUSH="$(jq -r '.push // false' <<<"$REPO_PERMS" 2>/dev/null)"
-HAS_TRIAGE="$(jq -r '(.triage // false) or (.push // false) or (.maintain // false) or (.admin // false)' <<<"$REPO_PERMS" 2>/dev/null)"
+HAS_TRIAGE="$(jq -r '.triage // false' <<<"$REPO_PERMS" 2>/dev/null)"
 if [[ "$HAS_PUSH" != "true" ]]; then
   echo "missing push access on $REPO_NWO — the orchestrator needs write access to push branches and merge PRs. aborting." >&2
   exit 1
