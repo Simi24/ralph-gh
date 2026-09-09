@@ -39,7 +39,7 @@ ralph:queued │  SELECT → CLAIM → CONTEXT → IMPLEMENT (TDD + ralph-refact
 Installed user-level (`~/.claude/agents/`), so they work in every repo. Both pin `model: opus` in their frontmatter — the model is decided by the definition, not the caller — while iteration sessions run on the cheaper model you set in `.ralph-gh.config` (`export ANTHROPIC_MODEL=...`).
 
 - **`ralph-refactorer`** — the REFACTOR step of each TDD cycle: improves the code just written in the GREEN phase without changing behavior, re-running tests after every step.
-- **`ralph-gate-reviewer`** — the review gate: adversarial correctness pass, acceptance-criteria coverage table, repo-standards compliance, structured `PASS`/`FAIL` verdict. If Matt Pocock's `two-axis-review` skill is installed it drives the review with it (Standards axis + Spec axis); otherwise it degrades gracefully to its built-in process.
+- **`ralph-gate-reviewer`** — the review gate: adversarial correctness pass, acceptance-criteria coverage table, repo-standards compliance, structured `PASS`/`FAIL` verdict. If a two-axis code-review skill is installed (e.g. Matt Pocock's `code-review`, or a derivative) it drives the review with it; otherwise it degrades gracefully to its built-in process.
 
 A repo can override either by defining its own agent and saying so in its `AGENTS.md` — the repo always wins.
 
@@ -141,11 +141,11 @@ No signal = fail-soft, next iteration anyway. External gates run **before** the 
 
 ## Recommended companions
 
-The loop shines with these (not bundled — install them yourself, all by [Matt Pocock](https://www.aihero.dev/)):
+The loop shines with these (not bundled — install them yourself, from [Matt Pocock's skills](https://github.com/mattpocock/skills)):
 
 - **`wayfinder`** — turns an idea into a mapped backlog of issues with acceptance criteria (perfect upstream of ralph-gh)
 - **`tdd`** — the red-green-refactor discipline the iterations follow
-- **`two-axis-review`** — the Standards/Spec review the gate agent uses when available
+- **`code-review`** — the two-axis (Standards/Spec) review; the gate agent auto-detects it, or any derivative of it, and falls back to an inline version otherwise
 
 ## Security
 
