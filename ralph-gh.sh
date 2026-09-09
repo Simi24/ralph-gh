@@ -338,6 +338,7 @@ reconcile_needs_review_issue() {
   if [[ -n "$closed_pr" ]]; then
     if gh issue edit "$issue" --remove-label "ralph:needs-review" --remove-label "ralph:in-progress" --add-label "ralph:queued" 2>>"$LOG_FILE"; then
       gh issue comment "$issue" --body "🤖 reconcile: PR #$closed_pr was closed without merging. Relabeling \`ralph:queued\` for retry." >/dev/null 2>&1 || true
+      track_issue "$issue"
       echo "[reconcile] issue #$issue — orphaned ralph:needs-review, PR #$closed_pr closed unmerged -> ralph:queued" | tee -a "$LOG_FILE"
     else
       echo "[reconcile] issue #$issue — relabel to ralph:queued failed, left as-is" | tee -a "$LOG_FILE"
