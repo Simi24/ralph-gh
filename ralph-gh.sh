@@ -226,7 +226,7 @@ fetch_closing_prs() {
     query($o: String!, $n: String!, $i: Int!) {
       repository(owner: $o, name: $n) {
         issue(number: $i) {
-          closedByPullRequestsReferences(first: 20) {
+          closedByPullRequestsReferences(first: 20, includeClosedPrs: true) {
             nodes { number state isCrossRepository }
           }
         }
@@ -305,17 +305,23 @@ reconcile_board_states() {
   repo=$(gh repo view --json name --jq '.name' 2>/dev/null) || { echo "[reconcile] could not determine repo name, skipping this pass" | tee -a "$LOG_FILE"; return 0; }
 
   local issue issues
-  issues=$(gh issue list --label "ralph:needs-review" --state all --json number --jq '.[].number' 2>/dev/null) || issues=""
-  while read -r issue; do
-    [[ -z "$issue" ]] && continue
-    reconcile_needs_review_issue "$issue" "$owner" "$repo"
-  done <<< "$issues"
+  if issues=$(gh issue list --label "ralph:needs-review" --state all --limit 100 --json number --jq '.[].number' 2>/dev/null); then
+    while read -r issue; do
+      [[ -z "$issue" ]] && continue
+      reconcile_needs_review_issue "$issue" "$owner" "$repo"
+    done <<< "$issues"
+  else
+    echo "[reconcile] could not list ralph:needs-review issues, skipping this pass" | tee -a "$LOG_FILE"
+  fi
 
-  issues=$(gh issue list --label "ralph:gate-passed" --state all --json number --jq '.[].number' 2>/dev/null) || issues=""
-  while read -r issue; do
-    [[ -z "$issue" ]] && continue
-    reconcile_gate_passed_issue "$issue" "$owner" "$repo"
-  done <<< "$issues"
+  if issues=$(gh issue list --label "ralph:gate-passed" --state all --limit 100 --json number --jq '.[].number' 2>/dev/null); then
+    while read -r issue; do
+      [[ -z "$issue" ]] && continue
+      reconcile_gate_passed_issue "$issue" "$owner" "$repo"
+    done <<< "$issues"
+  else
+    echo "[reconcile] could not list ralph:gate-passed issues, skipping this pass" | tee -a "$LOG_FILE"
+  fi
 }
 
 run_external_gates() {
