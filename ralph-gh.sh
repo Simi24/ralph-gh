@@ -239,7 +239,10 @@ label_watcher() {
 # never by the session under review.
 run_claude_step() {
   # $1 = input file, $2 = output file. Bounded by RALPH_SESSION_TIMEOUT:
-  # a hung session must never freeze an unattended run.
+  # a hung session must never freeze an unattended run. On timeout the
+  # child gets SIGTERM, then a bounded grace period to exit on its own,
+  # then SIGKILL — a child that ignores, is slow to handle, or is itself
+  # blocked past SIGTERM can never hold this function open indefinitely.
   #
   # --output-format json keeps $2 to ONLY the clean final-result text: with
   # the old "text" format piped through `2>&1`, CLI stderr shared the same
@@ -249,16 +252,24 @@ run_claude_step() {
   # files for debugging; nothing downstream reads them.
   local raw_json="${2%.txt}.raw.json"
   local err_file="${2%.txt}.stderr.log"
+  local kill_grace=10  # seconds a SIGTERM'd child gets before SIGKILL
   : > "$2"
   claude --dangerously-skip-permissions --print --output-format json \
     --add-dir "$REPO_ROOT" \
     < "$1" > "$raw_json" 2> "$err_file" &
-  local cpid=$! waited=0
+  local cpid=$! start_ts elapsed
+  start_ts=$(date +%s)
   while kill -0 "$cpid" 2>/dev/null; do
-    sleep 15
-    waited=$((waited + 15))
-    if (( waited >= RALPH_SESSION_TIMEOUT )); then
-      kill "$cpid" 2>/dev/null || true
+    sleep 1
+    elapsed=$(( $(date +%s) - start_ts ))
+    if (( elapsed >= RALPH_SESSION_TIMEOUT )); then
+      kill -TERM "$cpid" 2>/dev/null || true
+      local grace_waited=0
+      while kill -0 "$cpid" 2>/dev/null && (( grace_waited < kill_grace )); do
+        sleep 1
+        grace_waited=$((grace_waited + 1))
+      done
+      kill -KILL "$cpid" 2>/dev/null || true
       wait "$cpid" 2>/dev/null || true
       echo "[timeout] claude session exceeded ${RALPH_SESSION_TIMEOUT}s and was killed" | tee -a "$LOG_FILE"
       return 1
