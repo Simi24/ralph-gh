@@ -115,11 +115,12 @@ tmux new -s ralph 'cd /path/to/repo && caffeinate -dims ralph-gh --max-iteration
 |---|---|
 | `ralph:queued` | Ready to work, deps satisfied |
 | `ralph:in-progress` | Active iteration; stale > 10 min → released by the next session |
-| `ralph:needs-review` | PR open, waiting on the gate or a human |
+| `ralph:needs-review` | PR open, awaiting the external gate (the gate only processes PRs in this state) |
+| `ralph:gate-passed` | External gate PASS, merge withheld for a human (hitl-arch, halt-each-pr, or yolo allowlist miss) |
 | `ralph:hitl-arch` (manual) | Architecturally sensitive, never auto-merge |
 | `ralph:done` | Merged by the orchestrator |
 | `ralph:failed:systemic` | Tooling/infra failure → loop stops |
-| `ralph:failed:issue` | Per-issue failure (including exhausted gate-fix rounds) → loop continues |
+| `ralph:failed:issue` | Per-issue failure (including exhausted gate-fix rounds) → loop continues, PR left open but never re-processed |
 
 ## Stop signals (session → orchestrator)
 

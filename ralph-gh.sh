@@ -116,6 +116,7 @@ ensure_label "ralph:blocked"         "C5DEF5" "ralph-gh: deps unresolved"
 ensure_label "ralph:in-progress"     "FBCA04" "ralph-gh: iteration active"
 ensure_label "ralph:needs-review"    "1D76DB" "ralph-gh: PR open, awaiting gate/merge"
 ensure_label "ralph:hitl-arch"       "FFA500" "ralph-gh: architecturally sensitive, never auto-merge"
+ensure_label "ralph:gate-passed"     "0052CC" "ralph-gh: external gate PASS, merge withheld for a human"
 ensure_label "ralph:done"            "5319E7" "ralph-gh: merged"
 ensure_label "ralph:failed:systemic" "B60205" "ralph-gh: infra/tooling failure"
 ensure_label "ralph:failed:issue"    "D93F0B" "ralph-gh: per-issue implementation failure"
@@ -187,6 +188,16 @@ run_external_gates() {
     issue="${BASH_REMATCH[1]}"
     labels=$(gh issue view "$issue" --json labels --jq '[.labels[].name]|join(",")' 2>/dev/null || echo "")
 
+    # Eligibility is decided by the state machine, not the branch prefix:
+    # only PRs whose issue is ralph:needs-review are awaiting this gate.
+    # Human PRs on similarly-named branches, withheld hitl-arch PRs
+    # (ralph:gate-passed) and exhausted failures (ralph:failed:issue) are
+    # all skipped instead of being re-processed every iteration.
+    if [[ "$labels" != *"ralph:needs-review"* ]]; then
+      echo "[gate] PR #$pr skipped (issue #$issue is not ralph:needs-review)" | tee -a "$LOG_FILE"
+      continue
+    fi
+
     # Autonomy decides whether a PASS may auto-merge; the gate itself always runs.
     can_merge=1; withheld_reason=""
     if [[ "$AUTONOMY" == "halt-each-pr" ]]; then
@@ -254,10 +265,11 @@ EOF
         echo "[gate] PR #$pr — merge command failed, left open" | tee -a "$LOG_FILE"
       fi
     elif [[ "$verdict" == "PASS" ]]; then
+      gh issue edit "$issue" --remove-label "ralph:needs-review" --add-label "ralph:gate-passed" >/dev/null 2>&1 || true
       gh pr comment "$pr" --body "External gate: **PASS** — merge withheld by orchestrator ($withheld_reason). A human decides." >/dev/null 2>&1 || true
       echo "[gate] PR #$pr gate PASS, merge withheld ($withheld_reason)" | tee -a "$LOG_FILE"
     else
-      gh issue edit "$issue" --remove-label "ralph:in-progress" --add-label "ralph:failed:issue" >/dev/null 2>&1 || true
+      gh issue edit "$issue" --remove-label "ralph:needs-review" --remove-label "ralph:in-progress" --add-label "ralph:failed:issue" >/dev/null 2>&1 || true
       gh pr comment "$pr" --body "External gate: **FAIL** after $RALPH_GATE_FIX_ROUNDS fix round(s). Left open for a human. See the \`## Gate verdict\` comments." >/dev/null 2>&1 || true
       echo "[gate] PR #$pr FAILED the external gate after fix rounds — ralph:failed:issue" | tee -a "$LOG_FILE"
     fi
