@@ -164,8 +164,8 @@ preflight_healthy() {
 
 # Poll the health URL until it answers, once per second.
 wait_for_preflight_health() {
-  local attempt
-  for attempt in $(seq 1 "$RALPH_PREFLIGHT_HEALTH_RETRIES"); do
+  local _
+  for _ in $(seq 1 "$RALPH_PREFLIGHT_HEALTH_RETRIES"); do
     preflight_healthy && return 0
     sleep 1
   done
@@ -175,16 +175,21 @@ wait_for_preflight_health() {
 # Fails closed: a broken preflight command, or a health check that never goes
 # green, aborts here rather than burning a whole session on an LLM rediscovering
 # what `curl -sf` says instantly — and misfiling a good issue as failed.
+#
+# The command and the health URL are independently optional (e.g. infra
+# started outside this script, with only the URL configured to gate on it),
+# so the health assertion below runs whenever a URL is set — regardless of
+# whether a command ran, or ran at all.
 if [[ -n "$RALPH_PREFLIGHT_CMD" ]] && ! preflight_healthy; then
   echo "running preflight: $RALPH_PREFLIGHT_CMD"
   if ! eval "$RALPH_PREFLIGHT_CMD" >> "$LOG_FILE" 2>&1; then
     echo "preflight command failed: $RALPH_PREFLIGHT_CMD (see $LOG_FILE). aborting." >&2
     exit 1
   fi
-  if [[ -n "$RALPH_PREFLIGHT_HEALTH_URL" ]] && ! wait_for_preflight_health; then
-    echo "preflight health check never went green: $RALPH_PREFLIGHT_HEALTH_URL (waited ${RALPH_PREFLIGHT_HEALTH_RETRIES}s). aborting." >&2
-    exit 1
-  fi
+fi
+if [[ -n "$RALPH_PREFLIGHT_HEALTH_URL" ]] && ! wait_for_preflight_health; then
+  echo "preflight health check never went green: $RALPH_PREFLIGHT_HEALTH_URL (waited ${RALPH_PREFLIGHT_HEALTH_RETRIES}s). aborting." >&2
+  exit 1
 fi
 
 SESSION_ID="ralph-$(date +%s)"
