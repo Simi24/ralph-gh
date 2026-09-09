@@ -141,7 +141,7 @@ No signal = fail-soft, next iteration anyway. External gates run **before** the 
 
 - **GitHub**: labels, lease comments, PR comments (`## Gate verdict`) — the source of truth
 - **Git**: commits and merged PRs — the outcome
-- **Local, ephemeral** (`.ralph-gh/`, auto-gitignored): `run.log`, `last-run.md`, per-iteration input/output, per-gate input/output
+- **Local, ephemeral** (`.ralph-gh/`, auto-gitignored): `run.log`, `last-run.md`, per-iteration input/output, per-gate input/output — the `.output.txt` files hold only the clean final-result text; sibling `.raw.json`/`.stderr.log` files carry the full CLI response and stderr for debugging
 
 ## Recommended companions
 
