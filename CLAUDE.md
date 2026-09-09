@@ -67,7 +67,7 @@ Write `.ralph-gh/iter-$ITERATION.working.md` with your plan in 3-7 bullets. Upda
 
 ### 4. IMPLEMENT
 
-**Development method (default):** develop in TDD — load the `tdd` skill and follow red-green-refactor; the test comes before the implementation, and committing with failing tests is forbidden. After each red-green cycle, BEFORE the commit, spawn the `ralph-refactorer` agent (`subagent_type: "ralph-refactorer"`) with the cycle's context (issue, files touched, verify commands) and apply its outcome. If the repo's `AGENTS.md`/`CLAUDE.md` prescribes a different method or its own refactor agent, the repo wins.
+**Development method (default):** develop in TDD (if a `tdd` skill is installed, load it and follow it): red-green-refactor, the test comes BEFORE the implementation, and committing with failing tests is forbidden. After each red-green cycle, BEFORE the commit, spawn the `ralph-refactorer` agent (`subagent_type: "ralph-refactorer"`) with the cycle's context (issue, files touched, verify commands) and apply its outcome. If the repo's `AGENTS.md`/`CLAUDE.md` prescribes a different method or its own refactor agent, the repo wins.
 
 Absolute constraints (do NOT improvise around them):
 - Do NOT add `Co-Authored-By` footers to commits.
@@ -111,7 +111,7 @@ gh issue edit N --remove-label "ralph:in-progress" --add-label "ralph:needs-revi
 
 This inner gate exists so you fix findings cheaply while you still have the context. It does NOT authorize a merge: after you exit, the orchestrator runs its own EXTERNAL gate (a fresh session spawning the same reviewer agent) and only its verdict counts. A clean inner gate means the external one will pass on round 1.
 
-Spawn the `ralph-gate-reviewer` agent (`subagent_type: "ralph-gate-reviewer"`) with the issue number, the branch and the PR. It runs a two-axis review (Standards + Spec via the `two-axis-review` skill), an adversarial correctness pass and an AC-coverage table, and returns a structured `PASS`/`FAIL` verdict. If the repo's `AGENTS.md` prescribes its own gate agent, the repo's agent wins — but a gate MUST run either way.
+Spawn the `ralph-gate-reviewer` agent (`subagent_type: "ralph-gate-reviewer"`) with the issue number, the branch and the PR. It runs a two-axis review (Standards + Spec, via the `two-axis-review` skill when installed), an adversarial correctness pass and an AC-coverage table, and returns a structured `PASS`/`FAIL` verdict. If the repo's `AGENTS.md` prescribes its own gate agent, the repo's agent wins — but a gate MUST run either way.
 
 Post the full verdict as a PR comment under the header `## Gate verdict`. Any `FAIL` = gate fail: do not merge, fix the findings and re-run the gate.
 
