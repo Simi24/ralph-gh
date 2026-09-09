@@ -445,6 +445,13 @@ EOF
       echo "[gate] PR #$pr issue #$issue — external gate round $round" | tee -a "$LOG_FILE"
       run_claude_step "$gate_in" "$gate_out"
       if tail -5 "$gate_out" | grep -q '^GATE:PASS$'; then verdict="PASS"; break; fi
+      # A crashed/timed-out gate session leaves $gate_out empty: there are no
+      # findings to hand a fix session, so stop here instead of spawning one
+      # against a blank "authoritative gate findings" section.
+      if [[ ! -s "$gate_out" ]]; then
+        echo "[gate] PR #$pr — gate session produced no output, skipping fix session (round $round)" | tee -a "$LOG_FILE"
+        break
+      fi
       if ! tail -5 "$gate_out" | grep -q '^GATE:FAIL$'; then
         echo "[gate] PR #$pr — no parsable verdict (treating as FAIL)" | tee -a "$LOG_FILE"
       fi
