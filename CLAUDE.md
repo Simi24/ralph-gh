@@ -63,7 +63,7 @@ Read:
 - Parent PRD: if the body says `## Parent PRD\n\n#X` or cites a parent PRD, `gh issue view X` and read it.
 - **Shadow-read siblings**: find all closed issues that reference the same Parent PRD #X. For each, find its merged PR via `gh issue view <n> --json closedByPullRequestsReferences` and read the diff with `gh pr diff <pr>`. These are STYLE HINTS — follow their patterns unless contradicted by the current AC.
 
-Write `.ralph-gh/iter-$ITERATION.working.md` with your plan in 3-7 bullets. Update as you go.
+Write `.ralph-gh/iter-$ITERATION.$SESSION.working.md` with your plan in 3-7 bullets. Update as you go.
 
 ### 4. IMPLEMENT
 
