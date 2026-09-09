@@ -231,9 +231,19 @@ label_watcher() {
 run_claude_step() {
   # $1 = input file, $2 = output file. Bounded by RALPH_SESSION_TIMEOUT:
   # a hung session must never freeze an unattended run.
-  claude --dangerously-skip-permissions --print \
+  #
+  # --output-format json keeps $2 to ONLY the clean final-result text: with
+  # the old "text" format piped through `2>&1`, CLI stderr shared the same
+  # file the caller later `tail -N | grep`s a verdict marker (GATE:PASS,
+  # FIX:DONE, a <promise> tag) out of — a late stderr line could push the
+  # marker outside that window. Raw JSON and stderr are captured to sibling
+  # files for debugging; nothing downstream reads them.
+  local raw_json="${2%.txt}.raw.json"
+  local err_file="${2%.txt}.stderr.log"
+  : > "$2"
+  claude --dangerously-skip-permissions --print --output-format json \
     --add-dir "$REPO_ROOT" \
-    < "$1" > "$2" 2>&1 &
+    < "$1" > "$raw_json" 2> "$err_file" &
   local cpid=$! waited=0
   while kill -0 "$cpid" 2>/dev/null; do
     sleep 15
@@ -246,6 +256,12 @@ run_claude_step() {
     fi
   done
   wait "$cpid" 2>/dev/null || true
+  # A crashed/malformed session leaves no parsable JSON: $2 stays empty,
+  # which every caller already treats as "no verdict found" and fails closed.
+  if ! jq -re '.result' "$raw_json" > "$2" 2>/dev/null; then
+    : > "$2"
+    echo "[warn] claude session produced no parsable JSON result (raw: $raw_json, stderr: $err_file)" | tee -a "$LOG_FILE"
+  fi
   return 0
 }
 
