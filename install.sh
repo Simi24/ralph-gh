@@ -9,7 +9,7 @@ AGENTS="$HOME/.claude/agents"
 
 mkdir -p "$DEST" "$AGENTS"
 
-for f in ralph-gh.sh CLAUDE.md example.ralph-gh.config; do
+for f in ralph-gh.sh CLAUDE.md example.ralph-gh.config README.md; do
   if [[ -f "$DEST/$f" ]] && ! cmp -s "$SRC/$f" "$DEST/$f"; then
     cp "$DEST/$f" "$DEST/$f.bak"
     echo "existing $f differs — backed up to $f.bak"
@@ -19,6 +19,11 @@ done
 chmod +x "$DEST/ralph-gh.sh"
 
 for f in "$SRC"/agents/*.md; do
+  base="$(basename "$f")"
+  if [[ -f "$AGENTS/$base" ]] && ! cmp -s "$f" "$AGENTS/$base"; then
+    cp "$AGENTS/$base" "$AGENTS/$base.bak"
+    echo "existing $base differs — backed up to $base.bak"
+  fi
   cp "$f" "$AGENTS/"
 done
 

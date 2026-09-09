@@ -10,7 +10,7 @@ Built on the shoulders of:
 
 ## Why this instead of a hosted "assign-an-issue-to-AI" bot
 
-- **Runs on your Claude Code subscription, locally.** No separate product, no API billing, no code leaving your machine except through your own git remotes.
+- **Runs on your Claude Code subscription, locally.** No separate product to buy and nothing hosting your repo: sessions run on your machine against the Anthropic API, and code moves only through your own git remotes.
 - **Composes with your setup.** Your skills, your custom agents, your git hooks all apply inside every iteration.
 - **Quality gates are control flow, not vibes.** The session that writes the code cannot merge it. Merging requires a `GATE:PASS` verdict produced by a *separate* reviewer session that the orchestrator spawns and parses — the same pattern as CI: deterministic bash, not instructions an LLM might skip.
 - **The board never lies.** Labels are a real state machine (`queued → in-progress → needs-review → done | failed:*`) with lease comments, heartbeats, stale-lease recovery and dependency ordering (`Blocked by #N`). A watcher auto-claims labels if a session forgets the protocol.
@@ -36,7 +36,7 @@ ralph:queued │  SELECT → CLAIM → CONTEXT → IMPLEMENT (TDD + ralph-refact
 
 ### The two companion agents
 
-Installed user-level (`~/.claude/agents/`), so they work in every repo. Both pin `model: opus` in their frontmatter — the model is decided by the definition, not the caller — while iteration sessions run on the cheaper model you set in `.ralph-gh.config` (`export ANTHROPIC_MODEL=...`).
+Installed user-level (`~/.claude/agents/`), so they work in every repo. Both pin `model: opus` in their frontmatter — the model is decided by the definition, not the caller — while iteration sessions (and the thin wrapper sessions that drive the gate and the fixes) run on the model you set in `.ralph-gh.config` (`export ANTHROPIC_MODEL=...`); the review judgment itself always happens inside the Opus-pinned agent.
 
 - **`ralph-refactorer`** — the REFACTOR step of each TDD cycle: improves the code just written in the GREEN phase without changing behavior, re-running tests after every step.
 - **`ralph-gate-reviewer`** — the review gate: adversarial correctness pass, acceptance-criteria coverage table, repo-standards compliance, structured `PASS`/`FAIL` verdict. If the user has a code-review skill installed, the gate drives the review with it; otherwise it degrades gracefully to its built-in two-axis process.
@@ -56,7 +56,7 @@ echo 'alias ralph-gh="$HOME/.claude/ralph-gh/ralph-gh.sh"' >> ~/.zshrc
 
 The installer also registers a `/ralph-gh` skill, so inside an interactive Claude Code session you can type `/ralph-gh --autonomy=... --max-iterations=...` and have the session drive the orchestrator for you.
 
-Requires: `claude` (Claude Code CLI), `gh` (authenticated), `jq`, bash 4+.
+Requires: `claude` (Claude Code CLI), `gh` (authenticated, with push and label rights on the repo), `jq`, `curl`, bash 3.2+.
 
 ## Per-repo setup (one time)
 
@@ -73,6 +73,7 @@ Fill in:
 - `RALPH_DOC_FILES` — docs to update on public-API changes
 - `RALPH_BRANCH_PREFIX`, `RALPH_DEFAULT_BASE_BRANCH` — if your conventions differ
 - `RALPH_GATE_FIX_ROUNDS` — external-gate fix rounds before giving up (default 2)
+- `RALPH_SESSION_TIMEOUT` — seconds before a hung session is killed (default 7200)
 - `export ANTHROPIC_MODEL=...` — model for iteration sessions (gates stay on Opus regardless)
 
 Then label your backlog:
@@ -148,13 +149,21 @@ The loop shines with these (not bundled — install them yourself, from [Matt Po
 - **`tdd`** — the red-green-refactor discipline the iterations follow
 - **`code-review`** — the two-axis (Standards/Spec) review; the gate agent auto-detects it, or any derivative of it, and falls back to an inline version otherwise
 
-## Security
+## Security — read this before an unattended run
 
-Iterations run with `--dangerously-skip-permissions`: the session can run any command your user can. Treat it accordingly:
+Every session (iteration, gate, fix) runs with `--dangerously-skip-permissions` and your `gh` credentials: it can run any command your user can. Be clear about what is and is not enforced:
 
-- prefer running inside a **devcontainer** or throwaway VM for unattended runs;
+- **Deterministic (bash):** which PRs enter the pipeline (same-repo branches whose issue is `ralph:needs-review` — fork PRs are excluded by design), verdict parsing (an unparsable verdict is a FAIL, never a PASS), the yolo allowlist check (fails closed if the diff cannot be fetched), the merge itself, session timeouts.
+- **Prompt-level only:** everything the CLAUDE.md tells a session not to do (no merging, no force-push, no dependency changes). A misbehaving or prompt-injected session is not technically prevented from ignoring these; the external gate exists to catch the *output* of such a session before it reaches your base branch, not to make the session itself safe.
+- **Untrusted input:** issue bodies, PR comments and code under review are attacker-controlled text that flows into permissionless sessions. The orchestrator passes gate findings to fix sessions from its own captured output rather than trusting PR comments, and fix sessions are told to treat GitHub content as data — but that is still an instruction, not a guarantee.
+
+Practical rules:
+
+- for unattended runs, prefer a **devcontainer** or throwaway VM: that is the actual security boundary, not the prompts;
+- be careful on **public repos**: anyone can open issues and comment on PRs, and that text reaches your sessions;
+- note that `.ralph-gh.config` is `source`d and `RALPH_PREFLIGHT_CMD` is `eval`'d by the orchestrator — anyone with write access to the repo can put shell in them, so treat config changes like code review;
 - keep protective **git hooks** in the repo (block force-push, protected branches, destructive `gh` operations);
-- the orchestrator refuses to start on a dirty tree or off the base branch, and never edits issue bodies.
+- the orchestrator refuses to start on a dirty tree or off the base branch, stops if an iteration leaves the tree dirty, and never edits issue bodies.
 
 ## What it does NOT do
 
