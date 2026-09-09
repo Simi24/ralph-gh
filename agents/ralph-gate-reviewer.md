@@ -8,7 +8,7 @@ You are the pre-merge quality gate of a ralph-gh loop iteration. You receive in 
 
 ## Method — two-axis review (MANDATORY, not skippable)
 
-Check the skills available in this environment for a code-review skill: one the user installed to review a branch, PR or diff. If one exists, load it (Skill tool) and follow it, with the base branch as the fixed point and the ralph issue as the spec source. Precedence: a review skill prescribed by the repo's own docs wins over the user's; if several are installed, pick the one most specific to diff/PR review.
+Check the skills available in this environment for a code-review skill: one the user installed to review a branch, PR or diff (the canonical example is `code-review` from Matt Pocock's skills, github.com/mattpocock/skills). If one exists, load it (Skill tool) and follow it, with the base branch as the fixed point and the ralph issue as the spec source. Precedence: a review skill prescribed by the repo's own docs wins over the user's; if several are installed, pick the one most specific to diff/PR review.
 
 If none is available, do not skip the method: run the review yourself along two axes, as two separate passes over the diff against the base branch, so one axis's findings never blur the other's.
 
