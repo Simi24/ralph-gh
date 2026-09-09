@@ -141,7 +141,7 @@ No signal = fail-soft, next iteration anyway. External gates run **before** the 
 
 - **GitHub**: labels, lease comments, PR comments (`## Gate verdict`) — the source of truth
 - **Git**: commits and merged PRs — the outcome
-- **Local, ephemeral** (`.ralph-gh/`, auto-gitignored): `run.log`, `last-run.md`, per-iteration input/output/working notes, per-gate input/output — all session-scoped (`<name>.<session>.*`) so two runs never overwrite each other's artifacts, same convention as `touched-issues.<session>.txt` (the session-scoped record behind `last-run.md`'s "Issues touched this session") — the `.output.txt` files hold only the clean final-result text; sibling `.raw.json`/`.stderr.log` files carry the full CLI response and stderr for debugging
+- **Local, ephemeral** (`.ralph-gh/`, auto-gitignored): `run.log` (appended across runs) and `last-run.md` (rewritten each run), plus per-iteration input/output/working notes and per-gate input/output — these last session-scoped (`<name>.<session>.*`) so two runs never overwrite each other's artifacts, same convention as `touched-issues.<session>.txt` (the session-scoped record behind `last-run.md`'s "Issues touched this session") — the `.output.txt` files hold only the clean final-result text; sibling `.raw.json`/`.stderr.log` files carry the full CLI response and stderr for debugging
 
 ## Recommended companions
 
