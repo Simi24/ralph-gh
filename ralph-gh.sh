@@ -156,19 +156,34 @@ ensure_label "ralph:done"            "5319E7" "ralph-gh: merged"
 ensure_label "ralph:failed:systemic" "B60205" "ralph-gh: infra/tooling failure"
 ensure_label "ralph:failed:issue"    "D93F0B" "ralph-gh: per-issue implementation failure"
 
-# Preflight (project-specific, e.g. docker compose up)
-if [[ -n "$RALPH_PREFLIGHT_CMD" ]]; then
-  if [[ -n "$RALPH_PREFLIGHT_HEALTH_URL" ]] && curl -sf "$RALPH_PREFLIGHT_HEALTH_URL" >/dev/null 2>&1; then
-    : # already healthy
-  else
-    echo "running preflight: $RALPH_PREFLIGHT_CMD"
-    eval "$RALPH_PREFLIGHT_CMD" >> "$LOG_FILE" 2>&1 || true
-    if [[ -n "$RALPH_PREFLIGHT_HEALTH_URL" ]]; then
-      for _ in $(seq 1 "$RALPH_PREFLIGHT_HEALTH_RETRIES"); do
-        curl -sf "$RALPH_PREFLIGHT_HEALTH_URL" >/dev/null 2>&1 && break
-        sleep 1
-      done
-    fi
+# --- preflight (project-specific, e.g. docker compose up) --------------------
+# No health URL configured means "unknowable", which fails closed as "not healthy".
+preflight_healthy() {
+  [[ -n "$RALPH_PREFLIGHT_HEALTH_URL" ]] && curl -sf "$RALPH_PREFLIGHT_HEALTH_URL" >/dev/null 2>&1
+}
+
+# Poll the health URL until it answers, once per second.
+wait_for_preflight_health() {
+  local attempt
+  for attempt in $(seq 1 "$RALPH_PREFLIGHT_HEALTH_RETRIES"); do
+    preflight_healthy && return 0
+    sleep 1
+  done
+  return 1
+}
+
+# Fails closed: a broken preflight command, or a health check that never goes
+# green, aborts here rather than burning a whole session on an LLM rediscovering
+# what `curl -sf` says instantly — and misfiling a good issue as failed.
+if [[ -n "$RALPH_PREFLIGHT_CMD" ]] && ! preflight_healthy; then
+  echo "running preflight: $RALPH_PREFLIGHT_CMD"
+  if ! eval "$RALPH_PREFLIGHT_CMD" >> "$LOG_FILE" 2>&1; then
+    echo "preflight command failed: $RALPH_PREFLIGHT_CMD (see $LOG_FILE). aborting." >&2
+    exit 1
+  fi
+  if [[ -n "$RALPH_PREFLIGHT_HEALTH_URL" ]] && ! wait_for_preflight_health; then
+    echo "preflight health check never went green: $RALPH_PREFLIGHT_HEALTH_URL (waited ${RALPH_PREFLIGHT_HEALTH_RETRIES}s). aborting." >&2
+    exit 1
   fi
 fi
 
