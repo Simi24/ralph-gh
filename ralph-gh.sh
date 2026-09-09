@@ -210,20 +210,33 @@ label_watcher() {
 # never by the session under review.
 run_claude_step() {
   # $1 = input file, $2 = output file. Bounded by RALPH_SESSION_TIMEOUT:
-  # a hung session must never freeze an unattended run.
+  # a hung session must never freeze an unattended run. A single SIGTERM is
+  # not enough — a child that ignores it (or is itself stuck) would hang the
+  # `wait` below forever, freezing the exact orchestrator this timeout is
+  # supposed to protect. So on timeout: SIGTERM, a bounded grace period
+  # polled (never a blocking `wait`), then SIGKILL, which a normal process
+  # cannot ignore. Elapsed time is measured off the wall clock, not by
+  # accumulating sleep durations, so it can't drift.
+  local kill_grace=10
   claude --dangerously-skip-permissions --print \
     --add-dir "$REPO_ROOT" \
     < "$1" > "$2" 2>&1 &
-  local cpid=$! waited=0
+  local cpid=$! start_ts
+  start_ts=$(date +%s)
   while kill -0 "$cpid" 2>/dev/null; do
-    sleep 15
-    waited=$((waited + 15))
-    if (( waited >= RALPH_SESSION_TIMEOUT )); then
-      kill "$cpid" 2>/dev/null || true
+    if (( $(date +%s) - start_ts >= RALPH_SESSION_TIMEOUT )); then
+      kill -TERM "$cpid" 2>/dev/null || true
+      local waited_grace=0
+      while kill -0 "$cpid" 2>/dev/null && (( waited_grace < kill_grace )); do
+        sleep 1
+        waited_grace=$((waited_grace + 1))
+      done
+      kill -KILL "$cpid" 2>/dev/null || true
       wait "$cpid" 2>/dev/null || true
       echo "[timeout] claude session exceeded ${RALPH_SESSION_TIMEOUT}s and was killed" | tee -a "$LOG_FILE"
       return 1
     fi
+    sleep 1
   done
   wait "$cpid" 2>/dev/null || true
   return 0
