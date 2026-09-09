@@ -254,28 +254,49 @@ run_claude_step() {
   local err_file="${2%.txt}.stderr.log"
   local kill_grace=10  # seconds a SIGTERM'd child gets before SIGKILL
   : > "$2"
-  claude --dangerously-skip-permissions --print --output-format json \
-    --add-dir "$REPO_ROOT" \
-    < "$1" > "$raw_json" 2> "$err_file" &
-  local cpid=$! start_ts elapsed
-  start_ts=$(date +%s)
-  while kill -0 "$cpid" 2>/dev/null; do
-    sleep 1
-    elapsed=$(( $(date +%s) - start_ts ))
-    if (( elapsed >= RALPH_SESSION_TIMEOUT )); then
-      kill -TERM "$cpid" 2>/dev/null || true
-      local grace_waited=0
-      while kill -0 "$cpid" 2>/dev/null && (( grace_waited < kill_grace )); do
-        sleep 1
-        grace_waited=$((grace_waited + 1))
-      done
-      kill -KILL "$cpid" 2>/dev/null || true
-      wait "$cpid" 2>/dev/null || true
-      echo "[timeout] claude session exceeded ${RALPH_SESSION_TIMEOUT}s and was killed" | tee -a "$LOG_FILE"
-      return 1
-    fi
-  done
-  wait "$cpid" 2>/dev/null || true
+
+  # Job control (`set -m`) puts the backgrounded claude session in its OWN
+  # process group instead of the script's — without it, killing "$cpid" only
+  # ever reaches that one process, and any subprocess it spawned (a tool call
+  # shelling out to git, etc.) survives and can race the orchestrator's own
+  # git operations in the same worktree right after. Signaling the negative
+  # pid (-$cpid) targets the whole group. Save/restore the prior monitor
+  # state so this doesn't leak into the concurrently-running label_watcher
+  # background job. The whole block is wrapped in `2>/dev/null` because
+  # bash's own job-control "Terminated" notification fires asynchronously on
+  # a group kill under `set -m` — harmless noise, but not ours to log; the
+  # child's own stderr keeps going to $err_file (that redirect is on the
+  # inner command and wins), and the "[timeout]" line below still reaches
+  # stdout via tee.
+  local monitor_was_on=0
+  case $- in *m*) monitor_was_on=1 ;; esac
+  {
+    set -m
+    claude --dangerously-skip-permissions --print --output-format json \
+      --add-dir "$REPO_ROOT" \
+      < "$1" > "$raw_json" 2> "$err_file" &
+    local cpid=$! start_ts elapsed
+    start_ts=$(date +%s)
+    while kill -0 "$cpid" 2>/dev/null; do
+      sleep 1
+      elapsed=$(( $(date +%s) - start_ts ))
+      if (( elapsed >= RALPH_SESSION_TIMEOUT )); then
+        kill -TERM -"$cpid" 2>/dev/null || true
+        local grace_waited=0
+        while kill -0 "$cpid" 2>/dev/null && (( grace_waited < kill_grace )); do
+          sleep 1
+          grace_waited=$((grace_waited + 1))
+        done
+        kill -KILL -"$cpid" 2>/dev/null || true
+        wait "$cpid" 2>/dev/null || true
+        (( monitor_was_on )) || set +m
+        echo "[timeout] claude session exceeded ${RALPH_SESSION_TIMEOUT}s and was killed" | tee -a "$LOG_FILE"
+        return 1
+      fi
+    done
+    wait "$cpid" 2>/dev/null || true
+    (( monitor_was_on )) || set +m
+  } 2>/dev/null
   # A crashed/malformed session leaves no parsable JSON: $2 stays empty,
   # which every caller already treats as "no verdict found" and fails closed.
   if ! jq -re '.result' "$raw_json" > "$2" 2>/dev/null; then
