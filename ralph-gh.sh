@@ -221,10 +221,9 @@ run_claude_step() {
   claude --dangerously-skip-permissions --print \
     --add-dir "$REPO_ROOT" \
     < "$1" > "$2" 2>&1 &
-  local cpid=$! start_ts
-  start_ts=$(date +%s)
+  local cpid=$! start_secs=$SECONDS
   while kill -0 "$cpid" 2>/dev/null; do
-    if (( $(date +%s) - start_ts >= RALPH_SESSION_TIMEOUT )); then
+    if (( SECONDS - start_secs >= RALPH_SESSION_TIMEOUT )); then
       kill -TERM "$cpid" 2>/dev/null || true
       local waited_grace=0
       while kill -0 "$cpid" 2>/dev/null && (( waited_grace < kill_grace )); do

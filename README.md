@@ -73,7 +73,7 @@ Fill in:
 - `RALPH_DOC_FILES` — docs to update on public-API changes
 - `RALPH_BRANCH_PREFIX`, `RALPH_DEFAULT_BASE_BRANCH` — if your conventions differ
 - `RALPH_GATE_FIX_ROUNDS` — external-gate fix rounds before giving up (default 2)
-- `RALPH_SESSION_TIMEOUT` — seconds before a hung session is killed (default 7200)
+- `RALPH_SESSION_TIMEOUT` — seconds before a hung session is sent SIGTERM, then SIGKILL after a short grace period if it doesn't exit (default 7200)
 - `export ANTHROPIC_MODEL=...` — model for iteration sessions (gates stay on Opus regardless)
 
 Then label your backlog:
