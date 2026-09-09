@@ -203,7 +203,20 @@ TOUCHED_ISSUES_FILE="$STATE_DIR/touched-issues.$SESSION_ID.txt"
 track_issue() { echo "$1" >> "$TOUCHED_ISSUES_FILE"; }
 
 WATCHER_PID=""
-cleanup() { [[ -n "$WATCHER_PID" ]] && kill "$WATCHER_PID" 2>/dev/null || true; }
+# Published by run_claude_step while a claude session's process group may
+# still be alive, so cleanup() can reach it too: that session now runs in
+# its OWN process group (see run_claude_step), so it no longer dies for
+# free when the orchestrator itself is killed — it would otherwise become
+# an unsupervised orphan, still able to commit/push, racing the next run's
+# git operations in this same worktree.
+CLAUDE_PGID=""
+cleanup() {
+  [[ -n "$WATCHER_PID" ]] && kill "$WATCHER_PID" 2>/dev/null || true
+  if [[ -n "$CLAUDE_PGID" ]]; then
+    kill -TERM -"$CLAUDE_PGID" 2>/dev/null || true
+    kill -KILL -"$CLAUDE_PGID" 2>/dev/null || true
+  fi
+}
 trap cleanup EXIT INT TERM
 
 # --- label watcher -----------------------------------------------------------
@@ -276,6 +289,7 @@ run_claude_step() {
       --add-dir "$REPO_ROOT" \
       < "$1" > "$raw_json" 2> "$err_file" &
     local cpid=$! start_ts elapsed
+    CLAUDE_PGID="$cpid"  # group == leader pid under set -m; cleanup() reaches it if we get killed
     start_ts=$(date +%s)
     while kill -0 "$cpid" 2>/dev/null; do
       sleep 1
@@ -289,12 +303,14 @@ run_claude_step() {
         done
         kill -KILL -"$cpid" 2>/dev/null || true
         wait "$cpid" 2>/dev/null || true
+        CLAUDE_PGID=""
         (( monitor_was_on )) || set +m
         echo "[timeout] claude session exceeded ${RALPH_SESSION_TIMEOUT}s and was killed" | tee -a "$LOG_FILE"
         return 1
       fi
     done
     wait "$cpid" 2>/dev/null || true
+    CLAUDE_PGID=""
     (( monitor_was_on )) || set +m
   } 2>/dev/null
   # A crashed/malformed session leaves no parsable JSON: $2 stays empty,
