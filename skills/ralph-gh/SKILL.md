@@ -16,7 +16,7 @@ This skill is a thin wrapper around `~/.claude/ralph-gh/ralph-gh.sh`. The script
 ~/.claude/ralph-gh/ralph-gh.sh $ARGUMENTS
 ```
 
-3. While the script runs, it will print iteration progress, including `[gate]` lines: after each iteration the orchestrator runs a binding EXTERNAL review gate on the open PR and merges only on `GATE:PASS` (fix sessions + re-gate on FAIL). When it exits, show the user the contents of `.ralph-gh/last-run.md` and mention that gate verdicts live as `## Gate verdict` comments on the PRs.
+3. While the script runs, it will print iteration progress, including `[gate]` lines: after each iteration the orchestrator runs a binding EXTERNAL review gate on the open PR and merges only on `GATE:PASS` (fix sessions + re-gate on FAIL). When it exits, show the user the contents of `.ralph-gh/last-run.md` and mention that gate verdicts live as `## Gate verdict` comments on the PRs, and each PR's own phase timeline (gate/fix rounds started, merged, failed, plus a periodic "session alive" heartbeat) lives in a single edited-in-place `## ralph-gh status` comment — the place to point the user if a PR looks stalled.
 
 ## Arguments
 

@@ -168,9 +168,15 @@ On a match:
 
 ## State
 
-- **GitHub**: labels, lease comments, PR comments (`## Gate verdict`) — the source of truth
+- **GitHub**: labels, lease comments, PR comments (`## Gate verdict`, `## ralph-gh status`) — the source of truth
 - **Git**: commits and merged PRs — the outcome
 - **Local, ephemeral** (`.ralph-gh/`, auto-gitignored): `run.log` (appended across runs), `last-run.md` (rewritten each run) and `STOP` (a one-shot stop-request file, `touch`-able from another terminal, removed at startup and once consumed), plus per-iteration input/output/working notes and per-gate input/output — these last session-scoped (`<name>.<session>.*`) so two runs never overwrite each other's artifacts, same convention as `touched-issues.<session>.txt` (the session-scoped record behind `last-run.md`'s "Issues touched this session") — the `.output.txt` files hold only the clean final-result text; sibling `.raw.json`/`.stderr.log` files carry the full CLI response and stderr for debugging
+
+## Observability — if a PR seems stalled, look here
+
+**When a PR seems stuck, its `## ralph-gh status` comment is the place to look**: a single comment, edited in place (never a new one per event, so it never spams the PR's notifications), that the orchestrator appends a timestamped line to at every gate/fix/merge transition it drives (`external gate round N started`, `fix session round N started`, `merged`, `failed after N fix round(s)`) — so the whole phase timeline for that PR lives in one place instead of an archaeology dig across `run.log`. During the in-session dark period between the PR opening and the iteration session exiting — the one stretch with no deterministic transition to hook — the label watcher posts a `session alive, elapsed Nm` heartbeat to the same comment at most every 5 minutes, so "is it still running?" never requires re-deriving it from timestamps.
+
+Every narrative line the orchestrator writes to `run.log` goes through one timestamped (ISO 8601) `log()` helper — a handful of sites that redirect a subprocess's raw stderr straight into the file for debugging (a failed preflight command, a `gh` call's own error output) are captured as-is, unstamped, same as before this feature. `last-run.md` breaks each iteration's wall-clock down into session / gate-round / fix-round durations, so "how long has this phase been going" is a read, not archaeology.
 
 ## Recommended companions
 

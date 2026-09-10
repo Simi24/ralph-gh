@@ -134,6 +134,27 @@ LAST_RUN="$STATE_DIR/last-run.md"
 STOP_FILE="$STATE_DIR/STOP"
 mkdir -p "$STATE_DIR"
 
+# log MESSAGE...  |  producer | log
+# The ONLY place a narrative line reaches $LOG_FILE: prefixes an ISO
+# timestamp and tees to stdout + the log file. With arguments it logs "$*"
+# as one line; with none, it timestamps each line of stdin (for piping
+# multi-line/dynamic content like `tail -5 "$file" | log`). Every call site
+# below uses this instead of a bare `echo ... | tee -a "$LOG_FILE"`, so a
+# stalled run's phase timeline can be read straight off run.log instead of
+# reconstructed from untimestamped lines.
+log() {
+  local ts
+  ts="$(date -Iseconds)"
+  if (( $# > 0 )); then
+    printf '%s %s\n' "$ts" "$*" | tee -a "$LOG_FILE"
+  else
+    local line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      printf '%s %s\n' "$ts" "$line"
+    done | tee -a "$LOG_FILE"
+  fi
+}
+
 # Keep runtime state out of git via .git/info/exclude (local-only, so this
 # never dirties the working tree the way editing a tracked .gitignore would)
 if ! grep -qxF '.ralph-gh/' "$REPO_ROOT/.git/info/exclude" 2>/dev/null; then
@@ -267,7 +288,7 @@ STOP_REQUESTED=0
   echo "autonomy=$AUTONOMY  max_iterations=$MAX_ITERATIONS"
   echo "repo=$REPO_ROOT"
   echo "================================================================="
-} | tee -a "$LOG_FILE"
+} | log
 
 {
   echo "# ralph-gh run — $SESSION_ID"
@@ -305,6 +326,11 @@ RUN_CLAUDE_ERR_FILE=""
 USAGE_LIMIT_HIT=0
 USAGE_LIMIT_RESET_DESC=""
 
+# Published by run_external_gates for the main loop to fold into this
+# iteration's last-run.md timing breakdown -- see run_external_gates' own
+# reset of this at the top of each pass.
+GATE_TIMING_SUMMARY=""
+
 # --- stop handling (operator -> orchestrator) --------------------------------
 # Two levels, per the README:
 #   graceful  (stop file, or a first SIGINT)  -> let the in-flight iteration
@@ -327,26 +353,26 @@ requeue_current_issue() {
   local log_tag="${2:-stop}"
   local br issue labels
   br=$(git -C "$REPO_ROOT" branch --show-current 2>/dev/null) || {
-    echo "[$log_tag] could not determine the checked-out branch — nothing to requeue" | tee -a "$LOG_FILE"
+    echo "[$log_tag] could not determine the checked-out branch — nothing to requeue" | log
     return 0
   }
   [[ "$br" =~ issue-([0-9]+) ]] || {
-    echo "[$log_tag] branch '$br' carries no issue-N — nothing to requeue" | tee -a "$LOG_FILE"
+    echo "[$log_tag] branch '$br' carries no issue-N — nothing to requeue" | log
     return 0
   }
   issue="${BASH_REMATCH[1]}"
   labels=$(gh issue view "$issue" --json labels --jq '[.labels[].name]|join(",")' 2>/dev/null) || {
-    echo "[$log_tag] could not fetch issue #$issue's labels — leaving it untouched (fail closed)" | tee -a "$LOG_FILE"
+    echo "[$log_tag] could not fetch issue #$issue's labels — leaving it untouched (fail closed)" | log
     return 0
   }
   [[ "$labels" == *"ralph:in-progress"* ]] || {
-    echo "[$log_tag] issue #$issue is not ralph:in-progress (already ${labels:-unlabeled}) — nothing to requeue" | tee -a "$LOG_FILE"
+    echo "[$log_tag] issue #$issue is not ralph:in-progress (already ${labels:-unlabeled}) — nothing to requeue" | log
     return 0
   }
   gh issue edit "$issue" --remove-label "ralph:in-progress" --add-label "ralph:queued" >/dev/null 2>&1 || true
   gh issue comment "$issue" --body "🤖 ralph-gh lease released @ $(date -Iseconds) — session $SESSION_ID $reason" >/dev/null 2>&1 || true
   track_issue "$issue"
-  echo "[$log_tag] issue #$issue requeued (ralph:queued)" | tee -a "$LOG_FILE"
+  echo "[$log_tag] issue #$issue requeued (ralph:queued)" | log
 }
 
 # --- usage-limit awareness (#24) ---------------------------------------------
@@ -437,7 +463,7 @@ session_hit_usage_limit() {
 # it hasn't, that attempt hits the same detection again and waits again,
 # which is a bounded poll, not an unbounded stall.
 wait_for_usage_limit() {
-  echo "[usage-limit] waiting ${RALPH_USAGE_WAIT_SECONDS}s (${USAGE_LIMIT_RESET_DESC}) before resuming" | tee -a "$LOG_FILE"
+  echo "[usage-limit] waiting ${RALPH_USAGE_WAIT_SECONDS}s (${USAGE_LIMIT_RESET_DESC}) before resuming" | log
   sleep "$RALPH_USAGE_WAIT_SECONDS"
 }
 
@@ -449,8 +475,8 @@ handle_immediate_stop() {
   # duplicate lease-release comment. Disarmed for the rest of this handler's
   # life (it always ends in `exit`, so nothing re-arms them).
   trap '' INT TERM
-  echo "" | tee -a "$LOG_FILE"
-  echo "[stop] immediate stop requested — killing the in-flight session and requeuing its issue" | tee -a "$LOG_FILE"
+  echo "" | log
+  echo "[stop] immediate stop requested — killing the in-flight session and requeuing its issue" | log
   # label_watcher polls every 45s and, on its own tick, auto-claims any
   # branch-matching issue that's still ralph:queued. Stop it FIRST: otherwise
   # a tick landing between requeue_current_issue's label edit and its comment
@@ -480,8 +506,8 @@ handle_graceful_stop() {
     return
   fi
   STOP_REQUESTED=1
-  echo "" | tee -a "$LOG_FILE"
-  echo "[stop] graceful stop requested (SIGINT) — the in-flight iteration and its gate pass will finish, then the loop exits without claiming a new issue. Press Ctrl-C again (or send SIGTERM) to stop immediately instead." | tee -a "$LOG_FILE"
+  echo "" | log
+  echo "[stop] graceful stop requested (SIGINT) — the in-flight iteration and its gate pass will finish, then the loop exits without claiming a new issue. Press Ctrl-C again (or send SIGTERM) to stop immediately instead." | log
 }
 
 cleanup() {
@@ -554,13 +580,67 @@ trap handle_immediate_stop TERM
 trap 'EXIT_REASON="killed (SIGHUP)"; exit 129' HUP
 trap cleanup EXIT
 
+# --- PR status comment (phase visibility) -------------------------------------
+# One comment per PR, edited in place, under a fixed header — never a new
+# comment per event, which would spam the PR's notifications. Every
+# gate/fix/merge transition the orchestrator drives, plus the label watcher's
+# liveness heartbeat below, appends one timestamped line here so an operator
+# looking at a stalled PR finds a phase timeline in one place instead of
+# archaeology across run.log. Fails open: a gh/jq error is logged and the run
+# continues — a missing status update must never abort a gate pass.
+PR_STATUS_HEADER="## ralph-gh status"
+upsert_pr_status_comment() {
+  local pr="$1" line="$2" ts existing comment_id body new_body
+  ts="$(date -Iseconds)"
+  # gh api --paginate (no --jq) prints each page's raw JSON array back-to-back
+  # -- NOT one combined array -- so this is piped into a plain `jq -s` (slurp)
+  # that flattens every page before filtering, instead of asking gh api itself
+  # to filter (it has no --arg, so a dynamic header could never be passed in
+  # safely). `last` picks the most recent match if, somehow, more than one
+  # ever existed; normally there is at most one, by construction.
+  existing=$(gh api "repos/{owner}/{repo}/issues/$pr/comments" --paginate 2>/dev/null | \
+    jq -s --arg h "$PR_STATUS_HEADER" '[.[][] | select((.body // "") | startswith($h))] | last // empty' 2>/dev/null)
+  # Fail CLOSED on the read itself (distinct from the writes below, which fail
+  # open): a transient gh/jq error here must never be treated the same as "no
+  # existing comment yet", or it falls through to the `else` and creates a
+  # second status comment -- exactly what AC2 forbids. A genuine "zero
+  # matches" (new PR, no status comment posted yet) still exits 0 with empty
+  # output, so this only catches real fetch/parse failures.
+  if [[ $? -ne 0 ]]; then
+    log "[status] PR #$pr — could not read existing status comments, skipping this update"
+    return 0
+  fi
+  if [[ -n "$existing" && "$existing" != "null" ]]; then
+    comment_id=$(jq -r '.id' <<< "$existing" 2>/dev/null)
+    body=$(jq -r '.body' <<< "$existing" 2>/dev/null)
+    new_body="${body}"$'\n'"- ${ts} ${line}"
+    if ! gh api "repos/{owner}/{repo}/issues/comments/$comment_id" -X PATCH -f body="$new_body" >/dev/null 2>&1; then
+      log "[status] PR #$pr — could not update status comment (comment #$comment_id), continuing"
+    fi
+  else
+    new_body="$PR_STATUS_HEADER"$'\n\n'"- ${ts} ${line}"
+    if ! gh pr comment "$pr" --body "$new_body" >/dev/null 2>&1; then
+      log "[status] PR #$pr — could not create status comment, continuing"
+    fi
+  fi
+}
+
 # --- label watcher -----------------------------------------------------------
 # Iteration sessions sometimes skip the CLAIM label swap (protocol violation,
 # but the work itself is fine). While a session runs, reconcile the board:
 # if the repo sits on an issue branch whose issue is still ralph:queued,
 # claim it on the session's behalf. Scoped to this orchestrator by design —
 # no global hooks.
+#
+# It also drives the ONLY liveness signal available for the in-session dark
+# period (PR opened -> session exit): in-session phase detail is
+# prompt-level and therefore unreliable, but "the session is still alive, N
+# minutes in" is a deterministic fact the orchestrator itself can observe.
+# Posted to the PR's status comment at most once every 5 minutes so it never
+# spams the timeline the way a per-tick update would.
 label_watcher() {
+  local start_ts elapsed last_heartbeat=0
+  start_ts=$(date +%s)
   while true; do
     sleep 45
     local br issue labels
@@ -572,7 +652,22 @@ label_watcher() {
       gh issue edit "$issue" --remove-label "ralph:queued" --add-label "ralph:in-progress" >/dev/null 2>&1 || true
       gh issue comment "$issue" --body "🤖 ralph-gh lease acquired @ $(date -Iseconds) — session $SESSION_ID iter $ITERATION (auto-claimed by orchestrator watcher)" >/dev/null 2>&1 || true
       track_issue "$issue"
-      echo "[watcher] auto-claimed issue #$issue (label swap was skipped by the session)" | tee -a "$LOG_FILE"
+      echo "[watcher] auto-claimed issue #$issue (label swap was skipped by the session)" | log
+    fi
+
+    elapsed=$(( $(date +%s) - start_ts ))
+    if (( elapsed - last_heartbeat >= 300 )); then
+      local pr
+      pr=$(gh pr list --head "$br" --state open --json number,isCrossRepository \
+        --jq '[.[] | select(.isCrossRepository == false)] | .[0].number // empty' 2>/dev/null)
+      # Only consume this 5-minute window once there's actually a PR to post
+      # to -- otherwise a tick landing before the PR opens burns the window
+      # for nothing, and the first real heartbeat lands 5 minutes later than
+      # it should (the exact dark-period stretch this feature exists for).
+      if [[ -n "$pr" ]]; then
+        last_heartbeat=$elapsed
+        upsert_pr_status_comment "$pr" "session alive, elapsed $(( elapsed / 60 ))m"
+      fi
     fi
   done
 }
@@ -645,7 +740,7 @@ run_claude_step() {
         wait "$cpid" 2>/dev/null || true
         CLAUDE_PGID=""
         (( monitor_was_on )) || set +m
-        echo "[timeout] claude session exceeded ${RALPH_SESSION_TIMEOUT}s and was killed" | tee -a "$LOG_FILE"
+        echo "[timeout] claude session exceeded ${RALPH_SESSION_TIMEOUT}s and was killed" | log
         return 1
       fi
     done
@@ -657,7 +752,7 @@ run_claude_step() {
   # which every caller already treats as "no verdict found" and fails closed.
   if ! jq -re '.result' "$raw_json" > "$2" 2>/dev/null; then
     : > "$2"
-    echo "[warn] claude session produced no parsable JSON result (raw: $raw_json, stderr: $err_file)" | tee -a "$LOG_FILE"
+    echo "[warn] claude session produced no parsable JSON result (raw: $raw_json, stderr: $err_file)" | log
   fi
   return 0
 }
@@ -731,12 +826,12 @@ reconcile_needs_review_issue() {
   local issue="$1" owner="$2" repo="$3"
   local prs open_count merged_pr closed_pr
   if ! prs=$(fetch_closing_prs "$issue" "$owner" "$repo"); then
-    echo "[reconcile] issue #$issue (ralph:needs-review) — could not fetch linked PRs, leaving as-is" | tee -a "$LOG_FILE"
+    echo "[reconcile] issue #$issue (ralph:needs-review) — could not fetch linked PRs, leaving as-is" | log
     return 0
   fi
 
   open_count=$(jq -r '[.[] | select(.state == "OPEN" and .isCrossRepository == false)] | length' <<< "$prs" 2>/dev/null) || {
-    echo "[reconcile] issue #$issue — could not parse linked PRs, leaving as-is" | tee -a "$LOG_FILE"
+    echo "[reconcile] issue #$issue — could not parse linked PRs, leaving as-is" | log
     return 0
   }
   [[ "$open_count" -gt 0 ]] && return 0  # normal state: a same-repo PR is still open, the gate will process it
@@ -746,9 +841,9 @@ reconcile_needs_review_issue() {
     if gh issue edit "$issue" --remove-label "ralph:needs-review" --remove-label "ralph:in-progress" --add-label "ralph:done" 2>>"$LOG_FILE"; then
       gh issue comment "$issue" --body "🤖 reconcile: PR #$merged_pr was merged outside the orchestrator's gate. Relabeling \`ralph:done\`." >/dev/null 2>&1 || true
       track_issue "$issue"
-      echo "[reconcile] issue #$issue — orphaned ralph:needs-review, PR #$merged_pr already merged -> ralph:done" | tee -a "$LOG_FILE"
+      echo "[reconcile] issue #$issue — orphaned ralph:needs-review, PR #$merged_pr already merged -> ralph:done" | log
     else
-      echo "[reconcile] issue #$issue — relabel to ralph:done failed, left as-is" | tee -a "$LOG_FILE"
+      echo "[reconcile] issue #$issue — relabel to ralph:done failed, left as-is" | log
     fi
     return 0
   fi
@@ -758,26 +853,26 @@ reconcile_needs_review_issue() {
     if gh issue edit "$issue" --remove-label "ralph:needs-review" --remove-label "ralph:in-progress" --add-label "ralph:queued" 2>>"$LOG_FILE"; then
       gh issue comment "$issue" --body "🤖 reconcile: PR #$closed_pr was closed without merging. Relabeling \`ralph:queued\` for retry." >/dev/null 2>&1 || true
       track_issue "$issue"
-      echo "[reconcile] issue #$issue — orphaned ralph:needs-review, PR #$closed_pr closed unmerged -> ralph:queued" | tee -a "$LOG_FILE"
+      echo "[reconcile] issue #$issue — orphaned ralph:needs-review, PR #$closed_pr closed unmerged -> ralph:queued" | log
     else
-      echo "[reconcile] issue #$issue — relabel to ralph:queued failed, left as-is" | tee -a "$LOG_FILE"
+      echo "[reconcile] issue #$issue — relabel to ralph:queued failed, left as-is" | log
     fi
     return 0
   fi
 
-  echo "[reconcile] issue #$issue — ralph:needs-review with no linked PR found, leaving as-is for manual triage" | tee -a "$LOG_FILE"
+  echo "[reconcile] issue #$issue — ralph:needs-review with no linked PR found, leaving as-is for manual triage" | log
 }
 
 reconcile_gate_passed_issue() {
   local issue="$1" owner="$2" repo="$3"
   local prs merged_pr
   if ! prs=$(fetch_closing_prs "$issue" "$owner" "$repo"); then
-    echo "[reconcile] issue #$issue (ralph:gate-passed) — could not fetch linked PRs, leaving as-is" | tee -a "$LOG_FILE"
+    echo "[reconcile] issue #$issue (ralph:gate-passed) — could not fetch linked PRs, leaving as-is" | log
     return 0
   fi
 
   merged_pr=$(jq -r '[.[] | select(.state == "MERGED")][0].number // empty' <<< "$prs" 2>/dev/null) || {
-    echo "[reconcile] issue #$issue — could not parse linked PRs, leaving as-is" | tee -a "$LOG_FILE"
+    echo "[reconcile] issue #$issue — could not parse linked PRs, leaving as-is" | log
     return 0
   }
   [[ -z "$merged_pr" ]] && return 0  # still genuinely withheld, nothing to do
@@ -785,16 +880,16 @@ reconcile_gate_passed_issue() {
   if gh issue edit "$issue" --remove-label "ralph:gate-passed" --remove-label "ralph:in-progress" --add-label "ralph:done" 2>>"$LOG_FILE"; then
     gh issue comment "$issue" --body "🤖 reconcile: PR #$merged_pr was merged by a human. Relabeling \`ralph:done\`." >/dev/null 2>&1 || true
     track_issue "$issue"
-    echo "[reconcile] issue #$issue — ralph:gate-passed PR #$merged_pr merged by a human -> ralph:done" | tee -a "$LOG_FILE"
+    echo "[reconcile] issue #$issue — ralph:gate-passed PR #$merged_pr merged by a human -> ralph:done" | log
   else
-    echo "[reconcile] issue #$issue — relabel to ralph:done failed, left as-is" | tee -a "$LOG_FILE"
+    echo "[reconcile] issue #$issue — relabel to ralph:done failed, left as-is" | log
   fi
 }
 
 reconcile_board_states() {
   local owner repo
-  owner=$(gh repo view --json owner --jq '.owner.login' 2>/dev/null) || { echo "[reconcile] could not determine repo owner, skipping this pass" | tee -a "$LOG_FILE"; return 0; }
-  repo=$(gh repo view --json name --jq '.name' 2>/dev/null) || { echo "[reconcile] could not determine repo name, skipping this pass" | tee -a "$LOG_FILE"; return 0; }
+  owner=$(gh repo view --json owner --jq '.owner.login' 2>/dev/null) || { echo "[reconcile] could not determine repo owner, skipping this pass" | log; return 0; }
+  repo=$(gh repo view --json name --jq '.name' 2>/dev/null) || { echo "[reconcile] could not determine repo name, skipping this pass" | log; return 0; }
 
   local issue issues
   if issues=$(gh issue list --label "ralph:needs-review" --state all --limit 100 --json number --jq '.[].number' 2>/dev/null); then
@@ -803,7 +898,7 @@ reconcile_board_states() {
       reconcile_needs_review_issue "$issue" "$owner" "$repo"
     done <<< "$issues"
   else
-    echo "[reconcile] could not list ralph:needs-review issues, skipping this pass" | tee -a "$LOG_FILE"
+    echo "[reconcile] could not list ralph:needs-review issues, skipping this pass" | log
   fi
 
   if issues=$(gh issue list --label "ralph:gate-passed" --state all --limit 100 --json number --jq '.[].number' 2>/dev/null); then
@@ -812,7 +907,7 @@ reconcile_board_states() {
       reconcile_gate_passed_issue "$issue" "$owner" "$repo"
     done <<< "$issues"
   else
-    echo "[reconcile] could not list ralph:gate-passed issues, skipping this pass" | tee -a "$LOG_FILE"
+    echo "[reconcile] could not list ralph:gate-passed issues, skipping this pass" | log
   fi
 }
 
@@ -831,11 +926,15 @@ marker_seen() {
 }
 
 run_external_gates() {
+  # Reset per pass: accumulates "PR #N gate/fix round M: Ds" lines for the
+  # caller to fold into this iteration's last-run.md timing breakdown.
+  GATE_TIMING_SUMMARY=""
+
   reconcile_board_states
 
   local owner repo
-  owner=$(gh repo view --json owner --jq '.owner.login' 2>/dev/null) || { echo "[gate] could not determine repo owner, skipping this pass" | tee -a "$LOG_FILE"; return 0; }
-  repo=$(gh repo view --json name --jq '.name' 2>/dev/null) || { echo "[gate] could not determine repo name, skipping this pass" | tee -a "$LOG_FILE"; return 0; }
+  owner=$(gh repo view --json owner --jq '.owner.login' 2>/dev/null) || { echo "[gate] could not determine repo owner, skipping this pass" | log; return 0; }
+  repo=$(gh repo view --json name --jq '.name' 2>/dev/null) || { echo "[gate] could not determine repo name, skipping this pass" | log; return 0; }
 
   # GitHub only links a PR to an issue via closing keywords
   # (closedByPullRequestsReferences, what confirm_issue_link checks) when the
@@ -850,7 +949,7 @@ run_external_gates() {
   default_branch=$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name // ""' 2>/dev/null) || default_branch=""
   if [[ -z "$default_branch" || "$default_branch" != "$RALPH_DEFAULT_BASE_BRANCH" ]]; then
     linkage_available=0
-    echo "[gate] closing-keyword linkage unavailable (GitHub default branch is '${default_branch:-unknown}', RALPH_DEFAULT_BASE_BRANCH is '$RALPH_DEFAULT_BASE_BRANCH') -- falling back to unconfirmed branch/body candidates, gated only by the ralph:needs-review label check" | tee -a "$LOG_FILE"
+    echo "[gate] closing-keyword linkage unavailable (GitHub default branch is '${default_branch:-unknown}', RALPH_DEFAULT_BASE_BRANCH is '$RALPH_DEFAULT_BASE_BRANCH') -- falling back to unconfirmed branch/body candidates, gated only by the ralph:needs-review label check" | log
   fi
 
   local pr_list
@@ -866,10 +965,10 @@ run_external_gates() {
   # must still reach the gate, but a PR that merely mentions an issue number
   # must NOT be treated as that issue's PR when confirmation is possible.
   pr_list=$(gh pr list --state open --limit 100 --json number,headRefName,isCrossRepository \
-    --jq '.[] | select(.isCrossRepository == false) | "\(.number) \(.headRefName)"' 2>/dev/null) || { echo "[gate] could not list open PRs, skipping this pass" | tee -a "$LOG_FILE"; return 0; }
+    --jq '.[] | select(.isCrossRepository == false) | "\(.number) \(.headRefName)"' 2>/dev/null) || { echo "[gate] could not list open PRs, skipping this pass" | log; return 0; }
   [[ -z "$pr_list" ]] && return 0
 
-  local pr branch body issue labels can_merge withheld_reason round verdict changed_files candidate
+  local pr branch body issue labels can_merge withheld_reason round verdict changed_files candidate fix_rounds_run
   while read -r pr branch; do
     issue=""
     # A branch/body pattern only ever nominates a *candidate* issue; when
@@ -898,9 +997,9 @@ run_external_gates() {
     fi
     if [[ -z "$issue" ]]; then
       if [[ "$linkage_available" -eq 1 ]]; then
-        echo "[gate] PR #$pr skipped (no branch/body issue-number candidate is confirmed by GitHub's closing-keyword linkage)" | tee -a "$LOG_FILE"
+        echo "[gate] PR #$pr skipped (no branch/body issue-number candidate is confirmed by GitHub's closing-keyword linkage)" | log
       else
-        echo "[gate] PR #$pr skipped (no branch/body issue-number candidate found)" | tee -a "$LOG_FILE"
+        echo "[gate] PR #$pr skipped (no branch/body issue-number candidate found)" | log
       fi
       continue
     fi
@@ -913,7 +1012,7 @@ run_external_gates() {
     # (ralph:gate-passed) and exhausted failures (ralph:failed:issue) are
     # all skipped instead of being re-processed every iteration.
     if [[ "$labels" != *"ralph:needs-review"* ]]; then
-      echo "[gate] PR #$pr skipped (issue #$issue is not ralph:needs-review)" | tee -a "$LOG_FILE"
+      echo "[gate] PR #$pr skipped (issue #$issue is not ralph:needs-review)" | log
       continue
     fi
     track_issue "$issue"
@@ -934,7 +1033,7 @@ run_external_gates() {
       fi
     fi
 
-    round=0; verdict="FAIL"
+    round=0; verdict="FAIL"; fix_rounds_run=0
     while true; do
       round=$((round + 1))
 
@@ -946,8 +1045,9 @@ run_external_gates() {
       # round as a FAIL; only a second unparsable verdict counts. This inner
       # loop never itself spawns a fix session -- that only happens below,
       # and only from a genuinely parsed GATE:FAIL.
-      local gate_attempt gate_in gate_out gate_rc gate_result attempt_label attempt_suffix
+      local gate_attempt gate_in gate_out gate_rc gate_result attempt_label attempt_suffix gate_start_ts gate_dur
       gate_result=""
+      gate_start_ts=$(date +%s)
       for gate_attempt in 1 2; do
         attempt_suffix=""; attempt_label="round $round"
         if [[ $gate_attempt -eq 2 ]]; then
@@ -965,7 +1065,8 @@ You are the EXTERNAL review gate (arbiter tier) of a ralph-gh loop. Repo: $REPO_
 
 You must NOT modify files, push, merge, or edit labels. You only review and comment.
 EOF
-        echo "[gate] PR #$pr issue #$issue — external gate $attempt_label" | tee -a "$LOG_FILE"
+        echo "[gate] PR #$pr issue #$issue — external gate $attempt_label" | log
+        upsert_pr_status_comment "$pr" "external gate $attempt_label started"
         gate_rc=0
         run_claude_step "$gate_in" "$gate_out" || gate_rc=$?
         # Checked before the timeout/kill branch below: a usage limit is never
@@ -973,7 +1074,7 @@ EOF
         # the hit to the main loop via USAGE_LIMIT_HIT instead of letting the
         # round loop exhaust into ralph:failed:issue below.
         if session_hit_usage_limit "$gate_rc"; then
-          echo "[usage-limit] PR #$pr issue #$issue — gate session hit a usage limit (${USAGE_LIMIT_RESET_DESC}), not a FAIL" | tee -a "$LOG_FILE"
+          echo "[usage-limit] PR #$pr issue #$issue — gate session hit a usage limit (${USAGE_LIMIT_RESET_DESC}), not a FAIL" | log
           USAGE_LIMIT_HIT=1
           gate_result="usage-limit"
           break
@@ -986,7 +1087,7 @@ EOF
         # out/killed session already burned the time budget, so this does NOT
         # retry (see #36) -- unlike an unparsable verdict below.
         if [[ $gate_rc -ne 0 ]]; then
-          echo "[gate] PR #$pr — gate session timed out or was killed ($attempt_label), treating as FAIL and skipping fix session" | tee -a "$LOG_FILE"
+          echo "[gate] PR #$pr — gate session timed out or was killed ($attempt_label), treating as FAIL and skipping fix session" | log
           gate_result="timeout"
           break
         fi
@@ -996,14 +1097,16 @@ EOF
         # $gate_out empty, and a session that narrated status instead of
         # printing the marker).
         if [[ $gate_attempt -eq 1 ]]; then
-          echo "[gate] PR #$pr — $attempt_label produced no parsable verdict, retrying once with a fresh gate session; last lines of gate output:" | tee -a "$LOG_FILE"
+          echo "[gate] PR #$pr — $attempt_label produced no parsable verdict, retrying once with a fresh gate session; last lines of gate output:" | log
           gh pr comment "$pr" --body "External gate: round $round produced no parsable verdict — retrying with a fresh gate session (not a FAIL)." >/dev/null 2>&1 || true
         else
-          echo "[gate] PR #$pr — $attempt_label also produced no parsable verdict; treating as FAIL for this round, skipping fix session; last lines of gate output:" | tee -a "$LOG_FILE"
+          echo "[gate] PR #$pr — $attempt_label also produced no parsable verdict; treating as FAIL for this round, skipping fix session; last lines of gate output:" | log
           gate_result="unparsable"
         fi
-        tail -5 "$gate_out" | tee -a "$LOG_FILE"
+        tail -5 "$gate_out" | log
       done
+      gate_dur=$(( $(date +%s) - gate_start_ts ))
+      GATE_TIMING_SUMMARY+="PR #$pr gate round $round: ${gate_dur}s"$'\n'
 
       [[ "$gate_result" == "usage-limit" ]] && break
       [[ "$gate_result" == "timeout" ]] && break
@@ -1034,12 +1137,17 @@ On the LAST line print exactly one of these in plain text — no markdown format
 
 $(tail -n 80 "$gate_out")
 EOF
-      echo "[gate] PR #$pr — spawning fix session (round $round)" | tee -a "$LOG_FILE"
-      local fix_rc=0
+      echo "[gate] PR #$pr — spawning fix session (round $round)" | log
+      upsert_pr_status_comment "$pr" "fix session round $round started"
+      fix_rounds_run=$((fix_rounds_run + 1))
+      local fix_rc=0 fix_start_ts fix_dur
+      fix_start_ts=$(date +%s)
       run_claude_step "$fix_in" "$fix_out" || fix_rc=$?
+      fix_dur=$(( $(date +%s) - fix_start_ts ))
+      GATE_TIMING_SUMMARY+="PR #$pr fix round $round: ${fix_dur}s"$'\n'
       # Same usage-limit guard as the gate step above.
       if session_hit_usage_limit "$fix_rc"; then
-        echo "[usage-limit] PR #$pr issue #$issue — fix session hit a usage limit (${USAGE_LIMIT_RESET_DESC}), not a FAIL" | tee -a "$LOG_FILE"
+        echo "[usage-limit] PR #$pr issue #$issue — fix session hit a usage limit (${USAGE_LIMIT_RESET_DESC}), not a FAIL" | log
         USAGE_LIMIT_HIT=1
         break
       fi
@@ -1047,12 +1155,12 @@ EOF
       # return code overrides whatever raced into $fix_out — never re-gate a push
       # that may not have actually completed.
       if [[ $fix_rc -ne 0 ]]; then
-        echo "[gate] PR #$pr — fix session timed out or was killed (round $round)" | tee -a "$LOG_FILE"
+        echo "[gate] PR #$pr — fix session timed out or was killed (round $round)" | log
         break
       fi
       if ! marker_seen "$fix_out" 'FIX:DONE'; then
-        echo "[gate] PR #$pr — fix session did not report FIX:DONE (round $round); last lines of fix output:" | tee -a "$LOG_FILE"
-        tail -5 "$fix_out" | tee -a "$LOG_FILE"
+        echo "[gate] PR #$pr — fix session did not report FIX:DONE (round $round); last lines of fix output:" | log
+        tail -5 "$fix_out" | log
         break
       fi
     done
@@ -1076,7 +1184,8 @@ EOF
     # account-wide wall again, so stop here; the main loop decides whether to
     # exit or wait based on RALPH_WAIT_FOR_RESET.
     if [[ "$USAGE_LIMIT_HIT" -eq 1 ]]; then
-      echo "[gate] PR #$pr issue #$issue — usage limit hit, leaving ralph:needs-review for a later pass" | tee -a "$LOG_FILE"
+      upsert_pr_status_comment "$pr" "usage limit hit, leaving ralph:needs-review for a later pass"
+      echo "[gate] PR #$pr issue #$issue — usage limit hit, leaving ralph:needs-review for a later pass" | log
       break
     fi
 
@@ -1086,14 +1195,17 @@ EOF
         git checkout "$RALPH_DEFAULT_BASE_BRANCH" --quiet 2>/dev/null || true
         git pull --ff-only origin "$RALPH_DEFAULT_BASE_BRANCH" --quiet 2>/dev/null || true
         git branch -d "$branch" >/dev/null 2>&1 || true
-        echo "[gate] PR #$pr MERGED by orchestrator (gate PASS, round $round)" | tee -a "$LOG_FILE"
+        upsert_pr_status_comment "$pr" "merged"
+        echo "[gate] PR #$pr MERGED by orchestrator (gate PASS, round $round)" | log
       else
-        echo "[gate] PR #$pr — merge command failed, left open" | tee -a "$LOG_FILE"
+        upsert_pr_status_comment "$pr" "gate PASS (round $round) but the merge command failed, left open"
+        echo "[gate] PR #$pr — merge command failed, left open" | log
       fi
     elif [[ "$verdict" == "PASS" ]]; then
       gh issue edit "$issue" --remove-label "ralph:needs-review" --add-label "ralph:gate-passed" >/dev/null 2>&1 || true
       gh pr comment "$pr" --body "External gate: **PASS** — merge withheld by orchestrator ($withheld_reason). A human decides." >/dev/null 2>&1 || true
-      echo "[gate] PR #$pr gate PASS, merge withheld ($withheld_reason)" | tee -a "$LOG_FILE"
+      upsert_pr_status_comment "$pr" "gate PASS, merge withheld ($withheld_reason) — awaiting a human"
+      echo "[gate] PR #$pr gate PASS, merge withheld ($withheld_reason)" | log
     else
       gh issue edit "$issue" --remove-label "ralph:needs-review" --remove-label "ralph:in-progress" --add-label "ralph:failed:issue" >/dev/null 2>&1 || true
       # gate_result == "unparsable" only after a retry (see #36) -- distinguish
@@ -1102,10 +1214,12 @@ EOF
       # misrepresent a gate hiccup as a judgment on the work.
       if [[ "$gate_result" == "unparsable" ]]; then
         gh pr comment "$pr" --body "External gate: no parsable verdict even after a retry (round $round) -- the PR was never actually judged. Left open for a human; see the \`[gate]\` log lines for what the gate session printed." >/dev/null 2>&1 || true
-        echo "[gate] PR #$pr — no parsable verdict after a retry, never judged — ralph:failed:issue" | tee -a "$LOG_FILE"
+        upsert_pr_status_comment "$pr" "no parsable verdict after a retry (round $round) -- never judged"
+        echo "[gate] PR #$pr — no parsable verdict after a retry, never judged — ralph:failed:issue" | log
       else
-        gh pr comment "$pr" --body "External gate: **FAIL** after $RALPH_GATE_FIX_ROUNDS fix round(s). Left open for a human. See the \`## Gate verdict\` comments." >/dev/null 2>&1 || true
-        echo "[gate] PR #$pr FAILED the external gate after fix rounds — ralph:failed:issue" | tee -a "$LOG_FILE"
+        gh pr comment "$pr" --body "External gate: **FAIL** after $fix_rounds_run fix round(s). Left open for a human. See the \`## Gate verdict\` comments." >/dev/null 2>&1 || true
+        upsert_pr_status_comment "$pr" "failed after $fix_rounds_run fix round(s)"
+        echo "[gate] PR #$pr FAILED the external gate after fix rounds — ralph:failed:issue" | log
       fi
     fi
   done <<< "$pr_list"
@@ -1127,8 +1241,8 @@ EOF
 reset_tree_before_next_iteration() {
   git checkout "$RALPH_DEFAULT_BASE_BRANCH" --quiet 2>/dev/null || true
   clean_tree && return 0
-  echo "working tree dirty after iteration — stopping instead of compounding damage" | tee -a "$LOG_FILE"
-  git status --short | tee -a "$LOG_FILE"
+  echo "working tree dirty after iteration — stopping instead of compounding damage" | log
+  git status --short | log
   EXIT_REASON="dirty-tree"
   return 1
 }
@@ -1235,16 +1349,27 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   label_watcher & WATCHER_PID=$!
 
   iter_rc=0
+  iter_start_ts=$(date +%s)
   run_claude_step "$ITER_INPUT" "$ITER_OUTPUT" || iter_rc=$?
+  iter_dur=$(( $(date +%s) - iter_start_ts ))
   if [[ $iter_rc -ne 0 ]]; then
-    echo "iteration session timed out (continuing — gates still run on any open PR)" | tee -a "$LOG_FILE"
+    echo "iteration session timed out (continuing — gates still run on any open PR)" | log
   fi
 
   kill "$WATCHER_PID" 2>/dev/null || true
   wait "$WATCHER_PID" 2>/dev/null || true
   WATCHER_PID=""
 
-  tail -50 "$ITER_OUTPUT" | tee -a "$LOG_FILE"
+  # Duration breakdown for this iteration (AC4): session now, gate/fix rounds
+  # appended below once run_external_gates has run -- both land under the
+  # same header since nothing else writes to $LAST_RUN in between.
+  {
+    echo ""
+    echo "## Iteration $ITERATION timing"
+    echo "- session: ${iter_dur}s"
+  } >> "$LAST_RUN"
+
+  tail -50 "$ITER_OUTPUT" | log
 
   # Record the issue the session worked on this iteration (if any), so the
   # final report reflects this session's actual work even when the PR never
@@ -1262,8 +1387,12 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   # dry before it could do anything else than declare that; it also no-ops if
   # the session never claimed anything at all, same as today.
   if session_hit_usage_limit "$iter_rc"; then
-    echo "[usage-limit] iteration session hit a usage limit (${USAGE_LIMIT_RESET_DESC}) — not a failure, requeuing instead" | tee -a "$LOG_FILE"
+    echo "[usage-limit] iteration session hit a usage limit (${USAGE_LIMIT_RESET_DESC}) — not a failure, requeuing instead" | log
     requeue_current_issue "hit a usage limit (${USAGE_LIMIT_RESET_DESC}), requeued for retry (not a failure)" "usage-limit"
+    # run_external_gates below never ran this pass, so close out AC4's
+    # timing block ourselves -- otherwise it's left with a session line and
+    # no gate/fix line.
+    echo "- gate/fix rounds: none (usage limit hit before the gate ran)" >> "$LAST_RUN"
     usage_limit_resume_or_stop || break
     continue
   fi
@@ -1290,19 +1419,25 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   # loop.
   run_external_gates
 
+  if [[ -n "$GATE_TIMING_SUMMARY" ]]; then
+    printf '%s' "$GATE_TIMING_SUMMARY" | sed 's/^/- /' >> "$LAST_RUN"
+  else
+    echo "- gate/fix rounds: none" >> "$LAST_RUN"
+  fi
+
   # Same usage-limit check as above, for a gate/fix session hit inside
   # run_external_gates (USAGE_LIMIT_HIT is set there, since that's where the
   # per-PR issue number is already known). Reset immediately after reading so
   # it never leaks into the next pass.
   if [[ "$USAGE_LIMIT_HIT" -eq 1 ]]; then
     USAGE_LIMIT_HIT=0
-    echo "[usage-limit] external gate/fix session hit a usage limit (${USAGE_LIMIT_RESET_DESC}) — not a failure" | tee -a "$LOG_FILE"
+    echo "[usage-limit] external gate/fix session hit a usage limit (${USAGE_LIMIT_RESET_DESC}) — not a failure" | log
     # The ITERATION session (already completed, before the gate/fix session
     # that just hit the limit) may have signaled a terminal <promise> of its
     # own -- that instruction outranks resuming, see iter_promise_exit_reason.
     promise_reason="$(iter_promise_exit_reason)"
     if [[ -n "$promise_reason" ]]; then
-      echo "[usage-limit] iteration session already signaled $promise_reason — honoring that instead of resuming" | tee -a "$LOG_FILE"
+      echo "[usage-limit] iteration session already signaled $promise_reason — honoring that instead of resuming" | log
       EXIT_REASON="$promise_reason"
       break
     fi
