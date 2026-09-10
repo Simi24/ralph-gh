@@ -149,7 +149,7 @@ log() {
     printf '%s %s\n' "$ts" "$*" | tee -a "$LOG_FILE"
   else
     local line
-    while IFS= read -r line; do
+    while IFS= read -r line || [[ -n "$line" ]]; do
       printf '%s %s\n' "$ts" "$line"
     done | tee -a "$LOG_FILE"
   fi
@@ -600,6 +600,16 @@ upsert_pr_status_comment() {
   # ever existed; normally there is at most one, by construction.
   existing=$(gh api "repos/{owner}/{repo}/issues/$pr/comments" --paginate 2>/dev/null | \
     jq -s --arg h "$PR_STATUS_HEADER" '[.[][] | select(.body | startswith($h))] | last // empty' 2>/dev/null)
+  # Fail CLOSED on the read itself (distinct from the writes below, which fail
+  # open): a transient gh/jq error here must never be treated the same as "no
+  # existing comment yet", or it falls through to the `else` and creates a
+  # second status comment -- exactly what AC2 forbids. A genuine "zero
+  # matches" (new PR, no status comment posted yet) still exits 0 with empty
+  # output, so this only catches real fetch/parse failures.
+  if [[ $? -ne 0 ]]; then
+    log "[status] PR #$pr — could not read existing status comments, skipping this update"
+    return 0
+  fi
   if [[ -n "$existing" && "$existing" != "null" ]]; then
     comment_id=$(jq -r '.id' <<< "$existing" 2>/dev/null)
     body=$(jq -r '.body' <<< "$existing" 2>/dev/null)
@@ -951,7 +961,7 @@ run_external_gates() {
     --jq '.[] | select(.isCrossRepository == false) | "\(.number) \(.headRefName)"' 2>/dev/null) || { echo "[gate] could not list open PRs, skipping this pass" | log; return 0; }
   [[ -z "$pr_list" ]] && return 0
 
-  local pr branch body issue labels can_merge withheld_reason round verdict changed_files candidate
+  local pr branch body issue labels can_merge withheld_reason round verdict changed_files candidate fix_rounds_run
   while read -r pr branch; do
     issue=""
     # A branch/body pattern only ever nominates a *candidate* issue; when
@@ -1016,7 +1026,7 @@ run_external_gates() {
       fi
     fi
 
-    round=0; verdict="FAIL"
+    round=0; verdict="FAIL"; fix_rounds_run=0
     while true; do
       round=$((round + 1))
       local gate_in="$STATE_DIR/gate-pr$pr-round$round.$SESSION_ID.input.md"
@@ -1089,6 +1099,7 @@ $(tail -n 80 "$gate_out")
 EOF
       echo "[gate] PR #$pr — spawning fix session (round $round)" | log
       upsert_pr_status_comment "$pr" "fix session round $round started"
+      fix_rounds_run=$((fix_rounds_run + 1))
       local fix_rc=0 fix_start_ts fix_dur
       fix_start_ts=$(date +%s)
       run_claude_step "$fix_in" "$fix_out" || fix_rc=$?
@@ -1133,6 +1144,7 @@ EOF
     # account-wide wall again, so stop here; the main loop decides whether to
     # exit or wait based on RALPH_WAIT_FOR_RESET.
     if [[ "$USAGE_LIMIT_HIT" -eq 1 ]]; then
+      upsert_pr_status_comment "$pr" "usage limit hit, leaving ralph:needs-review for a later pass"
       echo "[gate] PR #$pr issue #$issue — usage limit hit, leaving ralph:needs-review for a later pass" | log
       break
     fi
@@ -1146,16 +1158,18 @@ EOF
         upsert_pr_status_comment "$pr" "merged"
         echo "[gate] PR #$pr MERGED by orchestrator (gate PASS, round $round)" | log
       else
+        upsert_pr_status_comment "$pr" "gate PASS (round $round) but the merge command failed, left open"
         echo "[gate] PR #$pr — merge command failed, left open" | log
       fi
     elif [[ "$verdict" == "PASS" ]]; then
       gh issue edit "$issue" --remove-label "ralph:needs-review" --add-label "ralph:gate-passed" >/dev/null 2>&1 || true
       gh pr comment "$pr" --body "External gate: **PASS** — merge withheld by orchestrator ($withheld_reason). A human decides." >/dev/null 2>&1 || true
+      upsert_pr_status_comment "$pr" "gate PASS, merge withheld ($withheld_reason) — awaiting a human"
       echo "[gate] PR #$pr gate PASS, merge withheld ($withheld_reason)" | log
     else
       gh issue edit "$issue" --remove-label "ralph:needs-review" --remove-label "ralph:in-progress" --add-label "ralph:failed:issue" >/dev/null 2>&1 || true
-      gh pr comment "$pr" --body "External gate: **FAIL** after $RALPH_GATE_FIX_ROUNDS fix round(s). Left open for a human. See the \`## Gate verdict\` comments." >/dev/null 2>&1 || true
-      upsert_pr_status_comment "$pr" "failed after $RALPH_GATE_FIX_ROUNDS fix round(s)"
+      gh pr comment "$pr" --body "External gate: **FAIL** after $fix_rounds_run fix round(s). Left open for a human. See the \`## Gate verdict\` comments." >/dev/null 2>&1 || true
+      upsert_pr_status_comment "$pr" "failed after $fix_rounds_run fix round(s)"
       echo "[gate] PR #$pr FAILED the external gate after fix rounds — ralph:failed:issue" | log
     fi
   done <<< "$pr_list"

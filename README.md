@@ -176,7 +176,7 @@ On a match:
 
 **When a PR seems stuck, its `## ralph-gh status` comment is the place to look**: a single comment, edited in place (never a new one per event, so it never spams the PR's notifications), that the orchestrator appends a timestamped line to at every gate/fix/merge transition it drives (`external gate round N started`, `fix session round N started`, `merged`, `failed after N fix round(s)`) — so the whole phase timeline for that PR lives in one place instead of an archaeology dig across `run.log`. During the in-session dark period between the PR opening and the iteration session exiting — the one stretch with no deterministic transition to hook — the label watcher posts a `session alive, elapsed Nm` heartbeat to the same comment at most every 5 minutes, so "is it still running?" never requires re-deriving it from timestamps.
 
-Every `run.log` line is timestamped (ISO 8601) via a single `log()` helper, and `last-run.md` breaks each iteration's wall-clock down into session / gate-round / fix-round durations, so "how long has this phase been going" is a read, not archaeology.
+Every narrative line the orchestrator writes to `run.log` goes through one timestamped (ISO 8601) `log()` helper — a handful of sites that redirect a subprocess's raw stderr straight into the file for debugging (a failed preflight command, a `gh` call's own error output) are captured as-is, unstamped, same as before this feature. `last-run.md` breaks each iteration's wall-clock down into session / gate-round / fix-round durations, so "how long has this phase been going" is a read, not archaeology.
 
 ## Recommended companions
 
