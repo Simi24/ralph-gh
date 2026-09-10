@@ -658,7 +658,8 @@ label_watcher() {
     elapsed=$(( $(date +%s) - start_ts ))
     if (( elapsed - last_heartbeat >= 300 )); then
       local pr
-      pr=$(gh pr list --head "$br" --state open --json number --jq '.[0].number // empty' 2>/dev/null)
+      pr=$(gh pr list --head "$br" --state open --json number,isCrossRepository \
+        --jq '[.[] | select(.isCrossRepository == false)] | .[0].number // empty' 2>/dev/null)
       # Only consume this 5-minute window once there's actually a PR to post
       # to -- otherwise a tick landing before the PR opens burns the window
       # for nothing, and the first real heartbeat lands 5 minutes later than
@@ -1388,6 +1389,10 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   if session_hit_usage_limit "$iter_rc"; then
     echo "[usage-limit] iteration session hit a usage limit (${USAGE_LIMIT_RESET_DESC}) — not a failure, requeuing instead" | log
     requeue_current_issue "hit a usage limit (${USAGE_LIMIT_RESET_DESC}), requeued for retry (not a failure)" "usage-limit"
+    # run_external_gates below never ran this pass, so close out AC4's
+    # timing block ourselves -- otherwise it's left with a session line and
+    # no gate/fix line.
+    echo "- gate/fix rounds: none (usage limit hit before the gate ran)" >> "$LAST_RUN"
     usage_limit_resume_or_stop || break
     continue
   fi
