@@ -73,6 +73,16 @@ if [[ ${#RALPH_VERIFY_COMMANDS[@]} -eq 0 ]]; then
   exit 1
 fi
 
+# Validated here, like MAX_ITERATIONS above, so a typo'd value is reported as
+# the config error it is instead of reaching `seq` in the retry loop below and
+# resurfacing as a bogus "health check never went green": platforms disagree on
+# non-positive input (BSD `seq 1 0` counts *down* and probes twice, GNU probes
+# zero times), and a non-number makes `seq` fail outright.
+if ! [[ "$RALPH_PREFLIGHT_HEALTH_RETRIES" =~ ^[1-9][0-9]*$ ]]; then
+  echo "invalid RALPH_PREFLIGHT_HEALTH_RETRIES in $CONFIG_FILE: '$RALPH_PREFLIGHT_HEALTH_RETRIES' (must be a positive integer)" >&2
+  exit 1
+fi
+
 # Dependency checks
 for cmd in claude gh jq curl; do
   if ! command -v "$cmd" >/dev/null; then echo "$cmd not found in PATH" >&2; exit 1; fi
@@ -158,8 +168,15 @@ ensure_label "ralph:failed:issue"    "D93F0B" "ralph-gh: per-issue implementatio
 
 # --- preflight (project-specific, e.g. docker compose up) --------------------
 # No health URL configured means "unknowable", which fails closed as "not healthy".
+#
+# The timeouts bound ONE probe, leaving the retry loop below the only thing
+# that decides how long we wait: a target that accepts the connection and then
+# never answers (wedged container, LocalStack mid-boot holding the socket)
+# would otherwise park a single curl there for as long as the TCP stack allows.
+# A health endpoint on loopback or the LAN answers in milliseconds, so 3s to
+# connect and 5s in total is already generous.
 preflight_healthy() {
-  [[ -n "$RALPH_PREFLIGHT_HEALTH_URL" ]] && curl -sf "$RALPH_PREFLIGHT_HEALTH_URL" >/dev/null 2>&1
+  [[ -n "$RALPH_PREFLIGHT_HEALTH_URL" ]] && curl -sf --connect-timeout 3 --max-time 5 "$RALPH_PREFLIGHT_HEALTH_URL" >/dev/null 2>&1
 }
 
 # Poll the health URL until it answers, once per second.
@@ -188,7 +205,7 @@ if [[ -n "$RALPH_PREFLIGHT_CMD" ]] && ! preflight_healthy; then
   fi
 fi
 if [[ -n "$RALPH_PREFLIGHT_HEALTH_URL" ]] && ! wait_for_preflight_health; then
-  echo "preflight health check never went green: $RALPH_PREFLIGHT_HEALTH_URL (waited ${RALPH_PREFLIGHT_HEALTH_RETRIES}s). aborting." >&2
+  echo "preflight health check never went green: $RALPH_PREFLIGHT_HEALTH_URL (gave up after ${RALPH_PREFLIGHT_HEALTH_RETRIES} attempts). aborting." >&2
   exit 1
 fi
 
