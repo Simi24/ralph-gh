@@ -467,11 +467,21 @@ You are the EXTERNAL review gate (arbiter tier) of a ralph-gh loop. Repo: $REPO_
 You must NOT modify files, push, merge, or edit labels. You only review and comment.
 EOF
       echo "[gate] PR #$pr issue #$issue — external gate round $round" | tee -a "$LOG_FILE"
-      run_claude_step "$gate_in" "$gate_out"
+      local gate_rc=0
+      run_claude_step "$gate_in" "$gate_out" || gate_rc=$?
+      # The return code is authoritative and is checked BEFORE $gate_out: a
+      # session force-killed mid-tool-call can leave a stray GATE:PASS in the
+      # output window, but a merge gate must fail closed on a session it just
+      # had to kill, whatever raced into the file. Its findings are equally
+      # untrustworthy, so no fix session is spawned from them either.
+      if [[ $gate_rc -ne 0 ]]; then
+        echo "[gate] PR #$pr — gate session timed out or was killed (round $round), treating as FAIL and skipping fix session" | tee -a "$LOG_FILE"
+        break
+      fi
       if tail -5 "$gate_out" | grep -q '^GATE:PASS$'; then verdict="PASS"; break; fi
-      # A crashed/timed-out gate session leaves $gate_out empty: there are no
-      # findings to hand a fix session, so stop here instead of spawning one
-      # against a blank "authoritative gate findings" section.
+      # A crashed gate session leaves $gate_out empty: there are no findings to
+      # hand a fix session, so stop here instead of spawning one against a blank
+      # "authoritative gate findings" section.
       if [[ ! -s "$gate_out" ]]; then
         echo "[gate] PR #$pr — gate session produced no output, skipping fix session (round $round)" | tee -a "$LOG_FILE"
         break
@@ -500,9 +510,13 @@ On the LAST line print exactly \`FIX:DONE\` if pushed, or \`FIX:BLOCKED <short r
 $(tail -n 80 "$gate_out")
 EOF
       echo "[gate] PR #$pr — spawning fix session (round $round)" | tee -a "$LOG_FILE"
-      run_claude_step "$fix_in" "$fix_out"
-      if ! tail -5 "$fix_out" | grep -q '^FIX:DONE$'; then
-        echo "[gate] PR #$pr — fix session blocked or failed" | tee -a "$LOG_FILE"
+      local fix_rc=0
+      run_claude_step "$fix_in" "$fix_out" || fix_rc=$?
+      # Same fail-closed guard as the gate step: a timed-out/killed fix session's
+      # return code overrides whatever raced into $fix_out — never re-gate a push
+      # that may not have actually completed.
+      if [[ $fix_rc -ne 0 ]] || ! tail -5 "$fix_out" | grep -q '^FIX:DONE$'; then
+        echo "[gate] PR #$pr — fix session blocked, failed, or timed out" | tee -a "$LOG_FILE"
         break
       fi
     done
