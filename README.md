@@ -139,6 +139,17 @@ The external gate itself (`run_external_gates`) resolves a candidate issue numbe
 
 No signal = fail-soft, next iteration anyway. External gates run **before** the signal is honored, so an open PR always gets its verdict.
 
+## Stopping a run (operator → orchestrator)
+
+The loop is not a daemon (see [What it does NOT do](#what-it-does-not-do)), but killing the terminal it runs in used to be the only way to stop it early — the in-flight session died mid-iteration, `last-run.md` never got its Final section, and the claimed issue sat `ralph:in-progress` until the stale-lease rule released it. Two deliberate stop levels replace that:
+
+| Trigger | Level | Effect |
+|---|---|---|
+| `touch .ralph-gh/STOP`, or a first `Ctrl-C` (SIGINT) | **Graceful** | The in-flight iteration and its external-gate pass finish normally; no new issue is claimed; the loop then exits (`stopped by operator`). |
+| A second `Ctrl-C`, or `SIGTERM` | **Immediate** | The running `claude` session is killed right away; if its issue is still `ralph:in-progress`, it's returned to `ralph:queued` with a lease-release comment; the loop exits (`stopped by operator (immediate)`). |
+
+`last-run.md` gets its `## Final` section on **every** exit path — normal completion, either stop level, or an early abort — not just the happy path. A stop file left over from a previous run is removed at startup, so it can never block a new run.
+
 ## State
 
 - **GitHub**: labels, lease comments, PR comments (`## Gate verdict`) — the source of truth
