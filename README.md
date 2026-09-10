@@ -39,7 +39,7 @@ ralph:queued │  SELECT → CLAIM → CONTEXT → IMPLEMENT (TDD + ralph-refact
 Installed user-level (`~/.claude/agents/`), so they work in every repo. Both pin `model: opus` in their frontmatter — the model is decided by the definition, not the caller — while iteration sessions (and the thin wrapper sessions that drive the gate and the fixes) run on the model you set in `.ralph-gh.config` (`export ANTHROPIC_MODEL=...`); the review judgment itself always happens inside the Opus-pinned agent.
 
 - **`ralph-refactorer`** — the REFACTOR step of each TDD cycle: improves the code just written in the GREEN phase without changing behavior, re-running tests after every step.
-- **`ralph-gate-reviewer`** — the review gate: adversarial correctness pass, acceptance-criteria coverage table, repo-standards compliance, structured `PASS`/`FAIL` verdict. If the user has a code-review skill installed, the gate drives the review with it; otherwise it degrades gracefully to its built-in two-axis process.
+- **`ralph-gate-reviewer`** — the review gate: adversarial correctness pass, acceptance-criteria coverage table, repo-standards compliance, structured `PASS`/`FAIL` verdict. If the user has a code-review skill installed, the gate drives the review with it; otherwise it degrades gracefully to its built-in two-axis process. Review depth scales with what the diff touches — a docs-only or peripheral change gets a lighter correctness pass than one touching core/sensitive code — but the two-axis review and AC coverage table are a non-skippable floor at every tier.
 
 A repo can override either by defining its own agent and saying so in its `AGENTS.md` — the repo always wins.
 
