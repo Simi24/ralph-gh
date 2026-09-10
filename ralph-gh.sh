@@ -944,18 +944,26 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   fi
 
   # Binding review gate + merge — deterministic, not skippable by the session.
-  # A first Ctrl-C is ignored for the duration of this call: without job
-  # control, every foreground gh/git child this function runs shares the
-  # script's process group and would otherwise take the terminal's SIGINT
-  # itself (a merge command dying mid-flight, a PASS verdict misread as a
-  # failed grep, ...) — exactly the "gate pass finishes normally" promise
-  # this trap exists to keep. SIGTERM (immediate stop) is untouched, so it
-  # still aborts right through this. The STOP file remains the
-  # interruption-safe lever if an operator needs to act on a hung gate call;
-  # a Ctrl-C ignored here simply needs pressing again once the pass returns.
-  trap '' INT
+  # SIGINT is deliberately left armed (handle_graceful_stop) through this
+  # call, not ignored: an earlier version ignored it here so a foreground
+  # gh/git child of run_external_gates (which shares this script's process
+  # group absent job control) couldn't be torn down mid-flight -- but SIG_IGN
+  # discards a signal outright, so a Ctrl-C during this window vanished with
+  # nothing recorded, and the loop went on to claim a new issue right after,
+  # violating issue #23's AC1. handle_graceful_stop only ever sets a flag (or,
+  # on a second press, escalates to handle_immediate_stop, which kills
+  # $CLAUDE_PGID and requeues) -- it never itself tears anything down, so
+  # arming it costs nothing new. The one real risk is a bare gh/git one-liner
+  # (not a claude session) dying mid-call to the direct kernel SIGINT delivery
+  # every process in this foreground group receives independent of the trap;
+  # that's bounded and self-healing -- e.g. a `gh pr merge` whose HTTP call
+  # completed server-side before the client died leaves the issue
+  # ralph:needs-review with an already-merged PR, exactly the state
+  # reconcile_needs_review_issue (run at the top of every gate pass) detects
+  # and relabels ralph:done. A hung gate/fix `claude` session is still killed
+  # right away by a second Ctrl-C or a SIGTERM, same as anywhere else in the
+  # loop.
   run_external_gates
-  trap handle_graceful_stop INT
 
   # Whole-line matches only: a session QUOTING the contract must not stop the loop
   if grep -qE '^[[:space:]]*<promise>QUEUE_EMPTY</promise>[[:space:]]*$'   "$ITER_OUTPUT"; then EXIT_REASON="queue-empty";      break; fi
