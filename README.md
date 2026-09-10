@@ -41,7 +41,7 @@ Installed user-level (`~/.claude/agents/`), so they work in every repo. Both pin
 - **`ralph-refactorer`** — the REFACTOR step of each TDD cycle: improves the code just written in the GREEN phase without changing behavior, re-running tests after every step.
 - **`ralph-gate-reviewer`** — the review gate: adversarial correctness pass, acceptance-criteria coverage table, repo-standards compliance, structured `PASS`/`FAIL` verdict. If the user has a code-review skill installed, the gate drives the review with it; otherwise it degrades gracefully to its built-in two-axis process. Review depth scales with what the diff touches — a docs-only or peripheral change gets a lighter correctness pass than one touching core/sensitive code — but the two-axis review and AC coverage table are a non-skippable floor at every tier.
 
-A repo can override either by defining its own agent and saying so in its `AGENTS.md` — the repo always wins.
+A repo can override either by defining its own agent and saying so in its `AGENTS.md` — the repo always wins. A repo can also declare its own critical paths in `AGENTS.md` (code whose failure corrupts state, authorizes actions, or handles untrusted input) to force the gate's deepest review tier on any diff that touches them, regardless of size.
 
 ## Install
 
