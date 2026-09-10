@@ -176,7 +176,10 @@ ensure_label "ralph:failed:issue"    "D93F0B" "ralph-gh: per-issue implementatio
 # A health endpoint on loopback or the LAN answers in milliseconds, so 3s to
 # connect and 5s in total is already generous.
 preflight_healthy() {
-  [[ -n "$RALPH_PREFLIGHT_HEALTH_URL" ]] && curl -sf --connect-timeout 3 --max-time 5 "$RALPH_PREFLIGHT_HEALTH_URL" >/dev/null 2>&1
+  [[ -n "$RALPH_PREFLIGHT_HEALTH_URL" ]] || return 1
+  curl -sf --connect-timeout 3 --max-time 5 "$RALPH_PREFLIGHT_HEALTH_URL" >/dev/null 2>&1
+  LAST_PREFLIGHT_PROBE_EXIT=$?
+  return "$LAST_PREFLIGHT_PROBE_EXIT"
 }
 
 # Poll the health URL until it answers, once per second.
@@ -205,7 +208,15 @@ if [[ -n "$RALPH_PREFLIGHT_CMD" ]] && ! preflight_healthy; then
   fi
 fi
 if [[ -n "$RALPH_PREFLIGHT_HEALTH_URL" ]] && ! wait_for_preflight_health; then
-  echo "preflight health check never went green: $RALPH_PREFLIGHT_HEALTH_URL (gave up after ${RALPH_PREFLIGHT_HEALTH_RETRIES} attempts). aborting." >&2
+  # curl exit 28 means every attempt hit the connect/total timeout without a
+  # response at all (wedged endpoint, or one that's just slower than the 5s
+  # cap) — distinct from a reachable endpoint that kept answering non-200.
+  if [[ "${LAST_PREFLIGHT_PROBE_EXIT:-}" == 28 ]]; then
+    reason="each attempt timed out with no response within the 3s connect / 5s total cap"
+  else
+    reason="the endpoint never returned a successful (200) response"
+  fi
+  echo "preflight health check never went green: $RALPH_PREFLIGHT_HEALTH_URL (gave up after ${RALPH_PREFLIGHT_HEALTH_RETRIES} attempts; $reason). aborting." >&2
   exit 1
 fi
 
