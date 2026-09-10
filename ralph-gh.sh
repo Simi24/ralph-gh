@@ -476,6 +476,10 @@ reconcile_board_states() {
 run_external_gates() {
   reconcile_board_states
 
+  local owner repo
+  owner=$(gh repo view --json owner --jq '.owner.login' 2>/dev/null) || { echo "[gate] could not determine repo owner, skipping this pass" | tee -a "$LOG_FILE"; return 0; }
+  repo=$(gh repo view --json name --jq '.name' 2>/dev/null) || { echo "[gate] could not determine repo name, skipping this pass" | tee -a "$LOG_FILE"; return 0; }
+
   local pr_list
   # Same-repo PRs only: a same-repo head branch requires push access, which is
   # the trust boundary. Fork PRs must NEVER enter this pipeline: gating or
@@ -483,29 +487,47 @@ run_external_gates() {
   # The branch prefix is deliberately NOT an eligibility filter here: it's a
   # convention for sessions, not a security boundary. The real boundaries are
   # isCrossRepository == false (checked here) and the linked issue's
-  # ralph:needs-review label (checked per-PR below) -- a PR on a
-  # differently-prefixed branch (misconfigured session, or a human's) must
-  # still reach the gate rather than rot unreviewed.
+  # ralph:needs-review label PLUS GitHub's own closing-keyword linkage
+  # (confirmed below via fetch_closing_prs) -- a PR on a differently-prefixed
+  # branch (misconfigured session, or a human's) must still reach the gate,
+  # but a PR that merely mentions an issue number must NOT be treated as
+  # that issue's PR.
   pr_list=$(gh pr list --state open --limit 100 --json number,headRefName,isCrossRepository \
-    --jq '.[] | select(.isCrossRepository == false) | "\(.number) \(.headRefName)"' 2>/dev/null) || return 0
+    --jq '.[] | select(.isCrossRepository == false) | "\(.number) \(.headRefName)"' 2>/dev/null) || { echo "[gate] could not list open PRs, skipping this pass" | tee -a "$LOG_FILE"; return 0; }
   [[ -z "$pr_list" ]] && return 0
 
-  local pr branch body issue labels can_merge withheld_reason round verdict changed_files
+  local pr branch body issue labels can_merge withheld_reason round verdict changed_files linked_prs
   while read -r pr branch; do
     if [[ "$branch" =~ issue-([0-9]+) ]]; then
       issue="${BASH_REMATCH[1]}"
     else
       # Fallback for the standard `<prefix>/issue-N-*` shape not being followed
       # (e.g. a differently-prefixed or hand-named branch): fetch the PR body
-      # and look for the repo's own PR-template closing keyword (`Closes #N`).
+      # and look for one of GitHub's own closing keywords (`Closes #N` etc.).
       body=$(gh pr view "$pr" --json body --jq '.body // ""' 2>/dev/null) || body=""
-      if [[ "$body" =~ [Cc]lose[sd]?[[:space:]]+#([0-9]+) ]]; then
-        issue="${BASH_REMATCH[1]}"
+      if [[ "$body" =~ ([Cc]lose|[Cc]loses|[Cc]losed|[Ff]ix|[Ff]ixes|[Ff]ixed|[Rr]esolve|[Rr]esolves|[Rr]esolved)[[:space:]]+#([0-9]+) ]]; then
+        issue="${BASH_REMATCH[2]}"
       else
         echo "[gate] PR #$pr skipped (branch \`$branch\` and PR body have no resolvable issue number)" | tee -a "$LOG_FILE"
         continue
       fi
     fi
+
+    # A branch/body pattern only nominates a *candidate* issue; confirm it
+    # against GitHub's actual closing-keyword linkage before treating the PR
+    # as that issue's PR. Without this, a PR that merely mentions "closed #N"
+    # in prose (or lands on a branch that happens to contain "issue-N") would
+    # be gated, fixed, and even merged as if it were issue #N's PR. Fail
+    # closed: an unfetchable or unconfirmed link is a skip, never a guess.
+    if ! linked_prs=$(fetch_closing_prs "$issue" "$owner" "$repo"); then
+      echo "[gate] PR #$pr skipped (could not confirm linkage to issue #$issue)" | tee -a "$LOG_FILE"
+      continue
+    fi
+    if ! jq -e --arg pr "$pr" 'any(.[]; (.number|tostring) == $pr and .isCrossRepository == false)' <<< "$linked_prs" >/dev/null 2>&1; then
+      echo "[gate] PR #$pr skipped (not actually linked to issue #$issue by GitHub's closing-keyword linkage)" | tee -a "$LOG_FILE"
+      continue
+    fi
+
     labels=$(gh issue view "$issue" --json labels --jq '[.labels[].name]|join(",")' 2>/dev/null || echo "")
 
     # Eligibility is decided by the state machine, not the branch prefix:
