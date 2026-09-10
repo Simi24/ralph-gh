@@ -384,6 +384,20 @@ fetch_closing_prs() {
   printf '%s' "$out"
 }
 
+# Confirms $2 (a PR number) is genuinely GitHub's closing PR for $1 (a
+# candidate issue number derived from a branch name or PR body pattern),
+# restricted to that issue's OPEN, same-repo linked PRs. Used by the external
+# gate to reject a PR that merely mentions an issue number without actually
+# being linked to it. Fails closed: any fetch/parse error or a PR absent from
+# the confirmed set returns non-zero, never a guess.
+confirm_issue_link() {
+  local candidate="$1" pr="$2" owner="$3" repo="$4" linked
+  linked=$(fetch_closing_prs "$candidate" "$owner" "$repo") || return 1
+  jq -e --arg pr "$pr" \
+    'any(.[]; (.number|tostring) == $pr and .state == "OPEN" and .isCrossRepository == false)' \
+    <<< "$linked" >/dev/null 2>&1
+}
+
 reconcile_needs_review_issue() {
   local issue="$1" owner="$2" repo="$3"
   local prs open_count merged_pr closed_pr
@@ -496,35 +510,32 @@ run_external_gates() {
     --jq '.[] | select(.isCrossRepository == false) | "\(.number) \(.headRefName)"' 2>/dev/null) || { echo "[gate] could not list open PRs, skipping this pass" | tee -a "$LOG_FILE"; return 0; }
   [[ -z "$pr_list" ]] && return 0
 
-  local pr branch body issue labels can_merge withheld_reason round verdict changed_files linked_prs
+  local pr branch body issue labels can_merge withheld_reason round verdict changed_files candidate
   while read -r pr branch; do
+    issue=""
+    # A branch/body pattern only ever nominates a *candidate* issue; it must
+    # be confirmed against GitHub's actual closing-keyword linkage
+    # (confirm_issue_link, OPEN + same-repo only) before the PR is treated as
+    # that issue's PR. Without this, a PR that merely mentions "closed #N" in
+    # prose (or lands on a branch that happens to contain "issue-N") could be
+    # gated, fixed, and even merged as if it were issue #N's PR.
     if [[ "$branch" =~ issue-([0-9]+) ]]; then
-      issue="${BASH_REMATCH[1]}"
-    else
-      # Fallback for the standard `<prefix>/issue-N-*` shape not being followed
-      # (e.g. a differently-prefixed or hand-named branch): fetch the PR body
-      # and look for one of GitHub's own closing keywords (`Closes #N` etc.).
+      candidate="${BASH_REMATCH[1]}"
+      confirm_issue_link "$candidate" "$pr" "$owner" "$repo" && issue="$candidate"
+    fi
+    if [[ -z "$issue" ]]; then
+      # The branch name carried no issue number, or its candidate didn't
+      # confirm (e.g. a coincidental "issue-N" substring elsewhere in a
+      # hand-named branch): fall back to the PR body's own closing keyword
+      # (`Closes #N` etc.) before giving up.
       body=$(gh pr view "$pr" --json body --jq '.body // ""' 2>/dev/null) || body=""
       if [[ "$body" =~ ([Cc]lose|[Cc]loses|[Cc]losed|[Ff]ix|[Ff]ixes|[Ff]ixed|[Rr]esolve|[Rr]esolves|[Rr]esolved)[[:space:]]+#([0-9]+) ]]; then
-        issue="${BASH_REMATCH[2]}"
-      else
-        echo "[gate] PR #$pr skipped (branch \`$branch\` and PR body have no resolvable issue number)" | tee -a "$LOG_FILE"
-        continue
+        candidate="${BASH_REMATCH[2]}"
+        confirm_issue_link "$candidate" "$pr" "$owner" "$repo" && issue="$candidate"
       fi
     fi
-
-    # A branch/body pattern only nominates a *candidate* issue; confirm it
-    # against GitHub's actual closing-keyword linkage before treating the PR
-    # as that issue's PR. Without this, a PR that merely mentions "closed #N"
-    # in prose (or lands on a branch that happens to contain "issue-N") would
-    # be gated, fixed, and even merged as if it were issue #N's PR. Fail
-    # closed: an unfetchable or unconfirmed link is a skip, never a guess.
-    if ! linked_prs=$(fetch_closing_prs "$issue" "$owner" "$repo"); then
-      echo "[gate] PR #$pr skipped (could not confirm linkage to issue #$issue)" | tee -a "$LOG_FILE"
-      continue
-    fi
-    if ! jq -e --arg pr "$pr" 'any(.[]; (.number|tostring) == $pr and .isCrossRepository == false)' <<< "$linked_prs" >/dev/null 2>&1; then
-      echo "[gate] PR #$pr skipped (not actually linked to issue #$issue by GitHub's closing-keyword linkage)" | tee -a "$LOG_FILE"
+    if [[ -z "$issue" ]]; then
+      echo "[gate] PR #$pr skipped (no branch/body issue-number candidate is confirmed by GitHub's closing-keyword linkage)" | tee -a "$LOG_FILE"
       continue
     fi
 
