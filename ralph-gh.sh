@@ -480,14 +480,32 @@ run_external_gates() {
   # Same-repo PRs only: a same-repo head branch requires push access, which is
   # the trust boundary. Fork PRs must NEVER enter this pipeline: gating or
   # fixing one would execute an outsider's code in a permissionless session.
+  # The branch prefix is deliberately NOT an eligibility filter here: it's a
+  # convention for sessions, not a security boundary. The real boundaries are
+  # isCrossRepository == false (checked here) and the linked issue's
+  # ralph:needs-review label (checked per-PR below) -- a PR on a
+  # differently-prefixed branch (misconfigured session, or a human's) must
+  # still reach the gate rather than rot unreviewed.
   pr_list=$(gh pr list --state open --limit 100 --json number,headRefName,isCrossRepository \
-    --jq ".[] | select(.isCrossRepository == false) | select(.headRefName | startswith(\"$RALPH_BRANCH_PREFIX/\")) | \"\(.number) \(.headRefName)\"" 2>/dev/null) || return 0
+    --jq '.[] | select(.isCrossRepository == false) | "\(.number) \(.headRefName)"' 2>/dev/null) || return 0
   [[ -z "$pr_list" ]] && return 0
 
-  local pr branch issue labels can_merge withheld_reason round verdict changed_files
+  local pr branch body issue labels can_merge withheld_reason round verdict changed_files
   while read -r pr branch; do
-    [[ "$branch" =~ issue-([0-9]+) ]] || continue
-    issue="${BASH_REMATCH[1]}"
+    if [[ "$branch" =~ issue-([0-9]+) ]]; then
+      issue="${BASH_REMATCH[1]}"
+    else
+      # Fallback for the standard `<prefix>/issue-N-*` shape not being followed
+      # (e.g. a differently-prefixed or hand-named branch): fetch the PR body
+      # and look for the repo's own PR-template closing keyword (`Closes #N`).
+      body=$(gh pr view "$pr" --json body --jq '.body // ""' 2>/dev/null) || body=""
+      if [[ "$body" =~ [Cc]lose[sd]?[[:space:]]+#([0-9]+) ]]; then
+        issue="${BASH_REMATCH[1]}"
+      else
+        echo "[gate] PR #$pr skipped (branch \`$branch\` and PR body have no resolvable issue number)" | tee -a "$LOG_FILE"
+        continue
+      fi
+    fi
     labels=$(gh issue view "$issue" --json labels --jq '[.labels[].name]|join(",")' 2>/dev/null || echo "")
 
     # Eligibility is decided by the state machine, not the branch prefix:
