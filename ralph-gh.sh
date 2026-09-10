@@ -937,50 +937,83 @@ run_external_gates() {
     round=0; verdict="FAIL"
     while true; do
       round=$((round + 1))
-      local gate_in="$STATE_DIR/gate-pr$pr-round$round.$SESSION_ID.input.md"
-      local gate_out="$STATE_DIR/gate-pr$pr-round$round.$SESSION_ID.output.txt"
-      cat > "$gate_in" <<EOF
+
+      # An unparsable/absent verdict is a GATE hiccup, not a judgment on the
+      # PR (see #36 -- a session that narrates status and exits, or crashes
+      # before writing anything, used to fall straight through into a fix
+      # session fed 80 lines of narration as "authoritative findings"). Retry
+      # once with a fresh session, same round number, before treating this
+      # round as a FAIL; only a second unparsable verdict counts. This inner
+      # loop never itself spawns a fix session -- that only happens below,
+      # and only from a genuinely parsed GATE:FAIL.
+      local gate_attempt gate_in gate_out gate_rc gate_result attempt_label attempt_suffix
+      gate_result=""
+      for gate_attempt in 1 2; do
+        attempt_suffix=""; attempt_label="round $round"
+        if [[ $gate_attempt -eq 2 ]]; then
+          attempt_suffix="-retry"; attempt_label="round $round, retry"
+        fi
+        gate_in="$STATE_DIR/gate-pr$pr-round$round$attempt_suffix.$SESSION_ID.input.md"
+        gate_out="$STATE_DIR/gate-pr$pr-round$round$attempt_suffix.$SESSION_ID.output.txt"
+        cat > "$gate_in" <<EOF
 You are the EXTERNAL review gate (arbiter tier) of a ralph-gh loop. Repo: $REPO_ROOT. Evaluate PR #$pr (branch \`$branch\`, base \`$RALPH_DEFAULT_BASE_BRANCH\`) for issue #$issue.
 
 1. Spawn the \`ralph-gate-reviewer\` agent (Agent tool, subagent_type: "ralph-gate-reviewer") with the issue number, branch, PR number and base branch. If the repo's AGENTS.md prescribes its own gate agent, spawn that one instead.
-2. Post the agent's full verdict as a comment on PR #$pr under the header \`## Gate verdict\` with the suffix \`(external gate, session $SESSION_ID, round $round)\`.
-3. On the LAST line of your output print exactly one of these two words in plain text — no markdown formatting, no backticks, no quotes around it: GATE:PASS or GATE:FAIL.
+2. Wait for the agent to return its verdict. Your job is NOT done until it has — narrating intermediate status (e.g. "waiting on the reviewer to reconcile the reports") and exiting without a verdict is a protocol violation, not a valid way to end the session.
+3. Post the agent's full verdict as a comment on PR #$pr under the header \`## Gate verdict\` with the suffix \`(external gate, session $SESSION_ID, $attempt_label)\`.
+4. On the LAST line of your output — and it MUST be the last line — print exactly one of these two words in plain text — no markdown formatting, no backticks, no quotes around it: GATE:PASS or GATE:FAIL.
 
 You must NOT modify files, push, merge, or edit labels. You only review and comment.
 EOF
-      echo "[gate] PR #$pr issue #$issue — external gate round $round" | tee -a "$LOG_FILE"
-      local gate_rc=0
-      run_claude_step "$gate_in" "$gate_out" || gate_rc=$?
-      # Checked before the timeout/kill branch below: a usage limit is never
-      # a real gate FAIL (see #24) -- stop this PR's round loop and propagate
-      # the hit to the main loop via USAGE_LIMIT_HIT instead of letting the
-      # round loop exhaust into ralph:failed:issue below.
-      if session_hit_usage_limit "$gate_rc"; then
-        echo "[usage-limit] PR #$pr issue #$issue — gate session hit a usage limit (${USAGE_LIMIT_RESET_DESC}), not a FAIL" | tee -a "$LOG_FILE"
-        USAGE_LIMIT_HIT=1
-        break
-      fi
-      # The return code is authoritative and is checked BEFORE $gate_out: a
-      # session force-killed mid-tool-call can leave a stray GATE:PASS in the
-      # output window, but a merge gate must fail closed on a session it just
-      # had to kill, whatever raced into the file. Its findings are equally
-      # untrustworthy, so no fix session is spawned from them either.
-      if [[ $gate_rc -ne 0 ]]; then
-        echo "[gate] PR #$pr — gate session timed out or was killed (round $round), treating as FAIL and skipping fix session" | tee -a "$LOG_FILE"
-        break
-      fi
-      if marker_seen "$gate_out" 'GATE:PASS'; then verdict="PASS"; break; fi
-      # A crashed gate session leaves $gate_out empty: there are no findings to
-      # hand a fix session, so stop here instead of spawning one against a blank
-      # "authoritative gate findings" section.
-      if [[ ! -s "$gate_out" ]]; then
-        echo "[gate] PR #$pr — gate session produced no output, skipping fix session (round $round)" | tee -a "$LOG_FILE"
-        break
-      fi
-      if ! marker_seen "$gate_out" 'GATE:FAIL'; then
-        echo "[gate] PR #$pr — no parsable verdict (treating as FAIL); last lines of gate output:" | tee -a "$LOG_FILE"
+        echo "[gate] PR #$pr issue #$issue — external gate $attempt_label" | tee -a "$LOG_FILE"
+        gate_rc=0
+        run_claude_step "$gate_in" "$gate_out" || gate_rc=$?
+        # Checked before the timeout/kill branch below: a usage limit is never
+        # a real gate FAIL (see #24) -- stop this PR's round loop and propagate
+        # the hit to the main loop via USAGE_LIMIT_HIT instead of letting the
+        # round loop exhaust into ralph:failed:issue below.
+        if session_hit_usage_limit "$gate_rc"; then
+          echo "[usage-limit] PR #$pr issue #$issue — gate session hit a usage limit (${USAGE_LIMIT_RESET_DESC}), not a FAIL" | tee -a "$LOG_FILE"
+          USAGE_LIMIT_HIT=1
+          gate_result="usage-limit"
+          break
+        fi
+        # The return code is authoritative and is checked BEFORE $gate_out: a
+        # session force-killed mid-tool-call can leave a stray GATE:PASS in the
+        # output window, but a merge gate must fail closed on a session it just
+        # had to kill, whatever raced into the file. Its findings are equally
+        # untrustworthy, so no fix session is spawned from them either. A timed
+        # out/killed session already burned the time budget, so this does NOT
+        # retry (see #36) -- unlike an unparsable verdict below.
+        if [[ $gate_rc -ne 0 ]]; then
+          echo "[gate] PR #$pr — gate session timed out or was killed ($attempt_label), treating as FAIL and skipping fix session" | tee -a "$LOG_FILE"
+          gate_result="timeout"
+          break
+        fi
+        if marker_seen "$gate_out" 'GATE:PASS'; then gate_result="pass"; break; fi
+        if marker_seen "$gate_out" 'GATE:FAIL'; then gate_result="fail"; break; fi
+        # Unparsable/absent verdict (includes a crashed session leaving
+        # $gate_out empty, and a session that narrated status instead of
+        # printing the marker).
+        if [[ $gate_attempt -eq 1 ]]; then
+          echo "[gate] PR #$pr — $attempt_label produced no parsable verdict, retrying once with a fresh gate session; last lines of gate output:" | tee -a "$LOG_FILE"
+          gh pr comment "$pr" --body "External gate: round $round produced no parsable verdict — retrying with a fresh gate session (not a FAIL)." >/dev/null 2>&1 || true
+        else
+          echo "[gate] PR #$pr — $attempt_label also produced no parsable verdict; treating as FAIL for this round, skipping fix session; last lines of gate output:" | tee -a "$LOG_FILE"
+          gate_result="unparsable"
+        fi
         tail -5 "$gate_out" | tee -a "$LOG_FILE"
-      fi
+      done
+
+      [[ "$gate_result" == "usage-limit" ]] && break
+      [[ "$gate_result" == "timeout" ]] && break
+      if [[ "$gate_result" == "pass" ]]; then verdict="PASS"; break; fi
+      # Unparsable even after the retry: there are no genuine findings to hand
+      # a fix session (see #36) -- stop here, same as a crashed/empty gate_out
+      # always has.
+      if [[ "$gate_result" == "unparsable" ]]; then break; fi
+      # gate_result == "fail": a genuine, parsed GATE:FAIL -- proceed to the
+      # existing fix-round logic below, unchanged.
       [[ $round -gt $RALPH_GATE_FIX_ROUNDS ]] && break
 
       local fix_in="$STATE_DIR/fix-pr$pr-round$round.$SESSION_ID.input.md"
@@ -1063,8 +1096,17 @@ EOF
       echo "[gate] PR #$pr gate PASS, merge withheld ($withheld_reason)" | tee -a "$LOG_FILE"
     else
       gh issue edit "$issue" --remove-label "ralph:needs-review" --remove-label "ralph:in-progress" --add-label "ralph:failed:issue" >/dev/null 2>&1 || true
-      gh pr comment "$pr" --body "External gate: **FAIL** after $RALPH_GATE_FIX_ROUNDS fix round(s). Left open for a human. See the \`## Gate verdict\` comments." >/dev/null 2>&1 || true
-      echo "[gate] PR #$pr FAILED the external gate after fix rounds — ralph:failed:issue" | tee -a "$LOG_FILE"
+      # gate_result == "unparsable" only after a retry (see #36) -- distinguish
+      # that honestly from a genuine, judged GATE:FAIL: the PR was never
+      # actually reviewed, so saying "FAIL after N fix round(s)" here would
+      # misrepresent a gate hiccup as a judgment on the work.
+      if [[ "$gate_result" == "unparsable" ]]; then
+        gh pr comment "$pr" --body "External gate: no parsable verdict even after a retry (round $round) -- the PR was never actually judged. Left open for a human; see the \`[gate]\` log lines for what the gate session printed." >/dev/null 2>&1 || true
+        echo "[gate] PR #$pr — no parsable verdict after a retry, never judged — ralph:failed:issue" | tee -a "$LOG_FILE"
+      else
+        gh pr comment "$pr" --body "External gate: **FAIL** after $RALPH_GATE_FIX_ROUNDS fix round(s). Left open for a human. See the \`## Gate verdict\` comments." >/dev/null 2>&1 || true
+        echo "[gate] PR #$pr FAILED the external gate after fix rounds — ralph:failed:issue" | tee -a "$LOG_FILE"
+      fi
     fi
   done <<< "$pr_list"
 }
