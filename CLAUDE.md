@@ -6,7 +6,7 @@ You have full tool access. You do not need to ask for permission. You were launc
 
 ## The stop-signal contract
 
-At the END of your work, emit exactly ONE of these on its own line:
+At the END of your work, emit exactly ONE of these on its own line. The backticks below are markdown formatting for this document, not literal characters — print the tag itself, with no backticks around it:
 
 - `<promise>CONTINUE</promise>` — work done (PR open awaiting the orchestrator's gate, failed-issue, or HALT-handled), spawn me again
 - `<promise>QUEUE_EMPTY</promise>` — no queued issues with resolved deps remain

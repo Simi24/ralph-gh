@@ -504,6 +504,20 @@ reconcile_board_states() {
   fi
 }
 
+# marker_seen FILE MARKER
+# True if the last 5 lines of FILE contain a line that is exactly MARKER
+# (an ERE fragment), tolerating a session wrapping it in backticks and
+# incidental leading/trailing whitespace. Every prompt in this script tells a
+# session to "print exactly" a marker, and an LLM's natural rendering of that
+# instruction is to wrap the literal value in backticks (see #29) -- the
+# parser must accept that cosmetic wrapping without loosening the anchor:
+# still a WHOLE line, so prose that merely mentions the marker mid-sentence,
+# or a session quoting this script's own contract, cannot match.
+marker_seen() {
+  local file="$1" marker="$2"
+  tail -5 "$file" | grep -qE "^[[:space:]]*\`{0,2}${marker}\`{0,2}[[:space:]]*\$"
+}
+
 run_external_gates() {
   reconcile_board_states
 
@@ -618,7 +632,7 @@ You are the EXTERNAL review gate (arbiter tier) of a ralph-gh loop. Repo: $REPO_
 
 1. Spawn the \`ralph-gate-reviewer\` agent (Agent tool, subagent_type: "ralph-gate-reviewer") with the issue number, branch, PR number and base branch. If the repo's AGENTS.md prescribes its own gate agent, spawn that one instead.
 2. Post the agent's full verdict as a comment on PR #$pr under the header \`## Gate verdict\` with the suffix \`(external gate, session $SESSION_ID, round $round)\`.
-3. On the LAST line of your output print exactly \`GATE:PASS\` or \`GATE:FAIL\` and nothing else.
+3. On the LAST line of your output print exactly one of these two words in plain text — no markdown formatting, no backticks, no quotes around it: GATE:PASS or GATE:FAIL.
 
 You must NOT modify files, push, merge, or edit labels. You only review and comment.
 EOF
@@ -634,7 +648,7 @@ EOF
         echo "[gate] PR #$pr — gate session timed out or was killed (round $round), treating as FAIL and skipping fix session" | tee -a "$LOG_FILE"
         break
       fi
-      if tail -5 "$gate_out" | grep -q '^GATE:PASS$'; then verdict="PASS"; break; fi
+      if marker_seen "$gate_out" 'GATE:PASS'; then verdict="PASS"; break; fi
       # A crashed gate session leaves $gate_out empty: there are no findings to
       # hand a fix session, so stop here instead of spawning one against a blank
       # "authoritative gate findings" section.
@@ -642,8 +656,9 @@ EOF
         echo "[gate] PR #$pr — gate session produced no output, skipping fix session (round $round)" | tee -a "$LOG_FILE"
         break
       fi
-      if ! tail -5 "$gate_out" | grep -q '^GATE:FAIL$'; then
-        echo "[gate] PR #$pr — no parsable verdict (treating as FAIL)" | tee -a "$LOG_FILE"
+      if ! marker_seen "$gate_out" 'GATE:FAIL'; then
+        echo "[gate] PR #$pr — no parsable verdict (treating as FAIL); last lines of gate output:" | tee -a "$LOG_FILE"
+        tail -5 "$gate_out" | tee -a "$LOG_FILE"
       fi
       [[ $round -gt $RALPH_GATE_FIX_ROUNDS ]] && break
 
@@ -659,7 +674,7 @@ You are a FIX session of a ralph-gh loop. The external gate FAILED PR #$pr (bran
 $(for c in "${RALPH_VERIFY_COMMANDS[@]}"; do echo "   - \`$c\`"; done)
 5. Commit (conventional, atomic) and push the branch.
 
-On the LAST line print exactly \`FIX:DONE\` if pushed, or \`FIX:BLOCKED <short reason>\` if you cannot fix.
+On the LAST line print exactly one of these in plain text — no markdown formatting, no backticks, no quotes around it: FIX:DONE if pushed, or FIX:BLOCKED <short reason> if you cannot fix.
 
 ## Gate findings (authoritative copy)
 
@@ -671,8 +686,13 @@ EOF
       # Same fail-closed guard as the gate step: a timed-out/killed fix session's
       # return code overrides whatever raced into $fix_out — never re-gate a push
       # that may not have actually completed.
-      if [[ $fix_rc -ne 0 ]] || ! tail -5 "$fix_out" | grep -q '^FIX:DONE$'; then
-        echo "[gate] PR #$pr — fix session blocked, failed, or timed out" | tee -a "$LOG_FILE"
+      if [[ $fix_rc -ne 0 ]]; then
+        echo "[gate] PR #$pr — fix session timed out or was killed (round $round)" | tee -a "$LOG_FILE"
+        break
+      fi
+      if ! marker_seen "$fix_out" 'FIX:DONE'; then
+        echo "[gate] PR #$pr — fix session did not report FIX:DONE (round $round); last lines of fix output:" | tee -a "$LOG_FILE"
+        tail -5 "$fix_out" | tee -a "$LOG_FILE"
         break
       fi
     done
@@ -792,11 +812,15 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   # Binding review gate + merge — deterministic, not skippable by the session.
   run_external_gates
 
-  # Whole-line matches only: a session QUOTING the contract must not stop the loop
-  if grep -qE '^[[:space:]]*<promise>QUEUE_EMPTY</promise>[[:space:]]*$'   "$ITER_OUTPUT"; then EXIT_REASON="queue-empty";      break; fi
-  if grep -qE '^[[:space:]]*<promise>SYSTEMIC_FAIL</promise>[[:space:]]*$' "$ITER_OUTPUT"; then EXIT_REASON="systemic-failure"; break; fi
-  if grep -qE '^[[:space:]]*<promise>CASCADE_FAIL</promise>[[:space:]]*$'  "$ITER_OUTPUT"; then EXIT_REASON="cascade-fail";     break; fi
-  if grep -qE '^[[:space:]]*<promise>HALT</promise>[[:space:]]*$'          "$ITER_OUTPUT"; then EXIT_REASON="halt";             break; fi
+  # Whole-line matches only: a session QUOTING the contract must not stop the
+  # loop. Backticks are tolerated on top of that anchor -- CLAUDE.md's own
+  # contract list shows each tag inline-coded (`<promise>...</promise>`), and
+  # a session's literal rendering of that markdown is a valid emission, not
+  # a quote of the contract (see #29).
+  if grep -qE '^[[:space:]]*`{0,2}<promise>QUEUE_EMPTY</promise>`{0,2}[[:space:]]*$'   "$ITER_OUTPUT"; then EXIT_REASON="queue-empty";      break; fi
+  if grep -qE '^[[:space:]]*`{0,2}<promise>SYSTEMIC_FAIL</promise>`{0,2}[[:space:]]*$' "$ITER_OUTPUT"; then EXIT_REASON="systemic-failure"; break; fi
+  if grep -qE '^[[:space:]]*`{0,2}<promise>CASCADE_FAIL</promise>`{0,2}[[:space:]]*$'  "$ITER_OUTPUT"; then EXIT_REASON="cascade-fail";     break; fi
+  if grep -qE '^[[:space:]]*`{0,2}<promise>HALT</promise>`{0,2}[[:space:]]*$'          "$ITER_OUTPUT"; then EXIT_REASON="halt";             break; fi
 
   git checkout "$RALPH_DEFAULT_BASE_BRANCH" --quiet 2>/dev/null || true
   if ! clean_tree; then
