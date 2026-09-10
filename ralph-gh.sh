@@ -360,20 +360,25 @@ requeue_current_issue() {
 # already told us.
 #
 # detect_usage_limit RAW_JSON ERR_FILE -- true if the session's own CLI/API
-# diagnostics (NOT its conversational reply) contain a documented usage-limit
-# message. On a match, sets USAGE_LIMIT_RESET_DESC to a best-effort,
-# human-readable description of the reset (never parsed back into a schedule
-# beyond the bounded sleep in wait_for_usage_limit).
+# diagnostics contain a documented usage-limit message. On a match, sets
+# USAGE_LIMIT_RESET_DESC to a best-effort, human-readable description of the
+# reset (never parsed back into a schedule beyond the bounded sleep in
+# wait_for_usage_limit).
 #
-# Deliberately scans ONLY RAW_JSON's `.errors[]` (the CLI's own result schema
-# carries an `errors` array on every non-success subtype --
-# error_during_execution, error_max_turns, etc.) and stderr -- NEVER the
-# model's own free-form `.result` text. That distinction is load-bearing, not
-# cosmetic: `.result` is text the MODEL authored, so a session merely
-# discussing usage limits (a gate/fix session reviewing this very feature is
-# a real, not hypothetical, example) can say the trigger phrase without an
-# actual limit ever being hit. `errors`/stderr are populated by the CLI/API
-# layer, which a session's own output can't forge.
+# Gated on RAW_JSON's `.is_error` being `true` before ANY text is even
+# looked at. Confirmed empirically against the installed CLI (2.1.236) in
+# the exact mode ralph-gh runs (`claude --print --output-format json`): an
+# API-level rejection replaces `.result` with the CLI's own composed message
+# and sets `.is_error:true` (with `subtype:"success"` and an
+# `.api_error_status` code) -- `.errors` is null/absent for this class of
+# failure; it only appears on CLI-internal subtypes like error_max_turns.
+# `.is_error` is a client/transport-set flag the model's own text can never
+# influence, unlike `.result`'s prose on an ordinary successful turn -- so
+# gating on it first is what makes it safe to then read `.result` itself:
+# a session merely discussing usage limits in a normal reply (a gate/fix
+# session reviewing this very feature is a real, not hypothetical, example)
+# has `.is_error:false` and never reaches the text match below, regardless
+# of what it says.
 #
 # The pattern is taken from
 # https://code.claude.com/docs/en/errors#youve-hit-your-session-limit ("You've
@@ -381,36 +386,26 @@ requeue_current_issue() {
 # written against. Anthropic does not document this as a stable API and can
 # reword it at any time without notice; per #24's AC4, anything that doesn't
 # match falls through to today's existing "no parsable result" handling
-# instead of being guessed at. The wildcard between "your" and "limit" covers
-# every quota name actually seen in the installed CLI (`session`, `weekly`,
-# `Opus`, `Sonnet`, `Fable 5`, `usage credit`, ...) without enumerating them --
-# capped at 40 chars and excluding `.`/`"` so it can't run on past the
-# sentence it belongs to.
-#
-# UNCONFIRMED CAVEAT: this message is rendered by the CLI's interactive
-# terminal UI (a notice banner). Whether a `--print --output-format json`
-# session (what ralph-gh always runs) reuses the identical wording in its
-# `errors` array when it hits the same account-level condition has not been
-# observed directly -- there is no subscription-quota-specific `subtype` in
-# the CLI's documented result schema, only generic ones
-# (error_during_execution and friends), so the limit text, if present at all
-# in print mode, most likely arrives as one of `errors[]`'s free-text
-# entries. This is the honest edge of "best-effort" promised by the issue.
+# instead of being guessed at. The gap between "your" and "limit" is
+# optional and unenumerated -- it covers every quota name actually seen in
+# the installed CLI (`session`, `weekly`, `Opus`, `Sonnet`, `Fable 5`, `usage
+# credit`, ...) AND the bare `You've hit your limit` variant (no quota word,
+# used on the personal-overage path) -- capped at 40 chars and excluding
+# `.`/`"` so it can't run on past the sentence it belongs to.
 detect_usage_limit() {
-  local raw_json="$1" err_file="$2" text
-  text="$(jq -r '.errors[]? // empty' "$raw_json" 2>/dev/null; cat "$err_file" 2>/dev/null)"
-  grep -qE "You've hit your [^.\"]{1,40} limit" <<< "$text" || return 1
+  local raw_json="$1" err_file="$2" is_error text
+  is_error="$(jq -r '.is_error // false' "$raw_json" 2>/dev/null)"
+  [[ "$is_error" == "true" ]] || return 1
+  text="$(jq -r '.errors[]? // empty, .result? // empty' "$raw_json" 2>/dev/null; cat "$err_file" 2>/dev/null)"
+  grep -qE "You've hit your[^.\"]{0,40} limit" <<< "$text" || return 1
   # -i: the reset clause is prose, and sentence-initial/paraphrased
   # capitalization ("Resets at 3pm.") is as likely as lowercase -- this only
   # affects a human-readable log/comment string, never control flow. Capped
-  # and newline-stripped before use (see the call sites) since it still
-  # originates in session-adjacent text.
+  # and newline-stripped before use since it still originates in
+  # session-adjacent text (defensive hygiene, not a security boundary: this
+  # is passed as a single argument, never eval'd).
   USAGE_LIMIT_RESET_DESC="$(grep -oiE '(resets?|continuing automatically at)[^."]*' <<< "$text" | head -1)"
-  [[ -z "$USAGE_LIMIT_RESET_DESC" ]] && USAGE_LIMIT_RESET_DESC="unknown (not stated in session output)"
-  # Defensive hygiene, not a security boundary (this text is passed as a
-  # single argument, never eval'd): a stray newline would corrupt the
-  # single-line [gate]/[usage-limit] log format, and an unbounded length
-  # could bloat a GitHub comment or last-run.md indefinitely.
+  [[ -z "$USAGE_LIMIT_RESET_DESC" ]] && USAGE_LIMIT_RESET_DESC="reset time unknown (not stated in session output)"
   USAGE_LIMIT_RESET_DESC="${USAGE_LIMIT_RESET_DESC//$'\n'/ }"
   USAGE_LIMIT_RESET_DESC="${USAGE_LIMIT_RESET_DESC:0:200}"
   return 0
@@ -437,7 +432,7 @@ session_hit_usage_limit() {
 # it hasn't, that attempt hits the same detection again and waits again,
 # which is a bounded poll, not an unbounded stall.
 wait_for_usage_limit() {
-  echo "[usage-limit] waiting ${RALPH_USAGE_WAIT_SECONDS}s (reset: ${USAGE_LIMIT_RESET_DESC}) before resuming" | tee -a "$LOG_FILE"
+  echo "[usage-limit] waiting ${RALPH_USAGE_WAIT_SECONDS}s (${USAGE_LIMIT_RESET_DESC}) before resuming" | tee -a "$LOG_FILE"
   sleep "$RALPH_USAGE_WAIT_SECONDS"
 }
 
@@ -1091,6 +1086,22 @@ reset_tree_before_next_iteration() {
   return 1
 }
 
+# iter_promise_exit_reason -- prints the matching exit reason
+# (queue-empty/systemic-failure/cascade-fail/halt) if $ITER_OUTPUT carries
+# that terminal <promise> tag (whole-line, backtick-tolerant -- see the
+# dedicated promise-check block below for why), or nothing if none matched.
+# Shared with the gate/fix usage-limit branch (#24): an explicit stop signal
+# the iteration session already gave THIS pass must win over resuming past a
+# LATER, unrelated usage-limit hit in the gate/fix phase -- otherwise
+# RALPH_WAIT_FOR_RESET=1 would silently discard e.g. a HALT the operator's
+# autonomy mode required, and go claim a new issue instead.
+iter_promise_exit_reason() {
+  if grep -qE '^[[:space:]]*`{0,2}<promise>QUEUE_EMPTY</promise>`{0,2}[[:space:]]*$'   "$ITER_OUTPUT"; then echo "queue-empty";      return; fi
+  if grep -qE '^[[:space:]]*`{0,2}<promise>SYSTEMIC_FAIL</promise>`{0,2}[[:space:]]*$' "$ITER_OUTPUT"; then echo "systemic-failure"; return; fi
+  if grep -qE '^[[:space:]]*`{0,2}<promise>CASCADE_FAIL</promise>`{0,2}[[:space:]]*$'  "$ITER_OUTPUT"; then echo "cascade-fail";     return; fi
+  if grep -qE '^[[:space:]]*`{0,2}<promise>HALT</promise>`{0,2}[[:space:]]*$'          "$ITER_OUTPUT"; then echo "halt";             return; fi
+}
+
 # What the main loop does after a usage-limit hit, in one place for both the
 # iteration-session and the gate/fix-session call sites. Returns 0 when the
 # loop may go around again (RALPH_WAIT_FOR_RESET=1: bounded sleep, then back
@@ -1099,7 +1110,7 @@ reset_tree_before_next_iteration() {
 # out. Call sites are `usage_limit_resume_or_stop || break` + `continue`.
 usage_limit_resume_or_stop() {
   if [[ "$RALPH_WAIT_FOR_RESET" -ne 1 ]]; then
-    EXIT_REASON="usage limit — resets at ${USAGE_LIMIT_RESET_DESC}"
+    EXIT_REASON="usage limit — ${USAGE_LIMIT_RESET_DESC}"
     return 1
   fi
   wait_for_usage_limit
@@ -1234,6 +1245,15 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   if [[ "$USAGE_LIMIT_HIT" -eq 1 ]]; then
     USAGE_LIMIT_HIT=0
     echo "[usage-limit] external gate/fix session hit a usage limit (${USAGE_LIMIT_RESET_DESC}) — not a failure" | tee -a "$LOG_FILE"
+    # The ITERATION session (already completed, before the gate/fix session
+    # that just hit the limit) may have signaled a terminal <promise> of its
+    # own -- that instruction outranks resuming, see iter_promise_exit_reason.
+    promise_reason="$(iter_promise_exit_reason)"
+    if [[ -n "$promise_reason" ]]; then
+      echo "[usage-limit] iteration session already signaled $promise_reason — honoring that instead of resuming" | tee -a "$LOG_FILE"
+      EXIT_REASON="$promise_reason"
+      break
+    fi
     usage_limit_resume_or_stop || break
     continue
   fi
@@ -1243,10 +1263,11 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   # contract list shows each tag inline-coded (`<promise>...</promise>`), and
   # a session's literal rendering of that markdown is a valid emission, not
   # a quote of the contract (see #29).
-  if grep -qE '^[[:space:]]*`{0,2}<promise>QUEUE_EMPTY</promise>`{0,2}[[:space:]]*$'   "$ITER_OUTPUT"; then EXIT_REASON="queue-empty";      break; fi
-  if grep -qE '^[[:space:]]*`{0,2}<promise>SYSTEMIC_FAIL</promise>`{0,2}[[:space:]]*$' "$ITER_OUTPUT"; then EXIT_REASON="systemic-failure"; break; fi
-  if grep -qE '^[[:space:]]*`{0,2}<promise>CASCADE_FAIL</promise>`{0,2}[[:space:]]*$'  "$ITER_OUTPUT"; then EXIT_REASON="cascade-fail";     break; fi
-  if grep -qE '^[[:space:]]*`{0,2}<promise>HALT</promise>`{0,2}[[:space:]]*$'          "$ITER_OUTPUT"; then EXIT_REASON="halt";             break; fi
+  promise_reason="$(iter_promise_exit_reason)"
+  if [[ -n "$promise_reason" ]]; then
+    EXIT_REASON="$promise_reason"
+    break
+  fi
 
   reset_tree_before_next_iteration || break
   sleep 2
