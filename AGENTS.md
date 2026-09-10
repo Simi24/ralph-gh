@@ -18,7 +18,7 @@ Code, and code-equivalent prompt markdown, whose failure corrupts state, authori
 - **Merge decision and gate eligibility** — `run_external_gates()`, `reconcile_board_states()`, `reconcile_needs_review_issue()`, `reconcile_gate_passed_issue()`.
 - **Traps and signal handling** — `handle_graceful_stop()`, `handle_immediate_stop()`, `cleanup()`, and the `trap` registrations around them.
 - **Label state transitions** — `ensure_label()` and every `gh issue edit --add-label/--remove-label` call site.
-- **Protocol/prompt markdown** — `CLAUDE.md` (the iteration prompt) and `agents/*.md` (agent definitions, including the gate reviewer's own prompt). These are behavior, not prose, regardless of file extension — never Tier 1 even when the diff is markdown-only.
+- **Protocol/prompt markdown** — `CLAUDE.md` (the iteration prompt), `agents/*.md` (agent definitions, including the gate reviewer's own prompt), and this `AGENTS.md` file itself, since it defines the critical-path override. These are behavior, not prose, regardless of file extension — never Tier 1 even when the diff is markdown-only.
 
 Any diff touching one of these is Tier 3 (full empirical verification) in the gate review, regardless of diff size.
 
