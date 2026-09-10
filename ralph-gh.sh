@@ -64,6 +64,8 @@ RALPH_BRANCH_PREFIX="ralph"
 RALPH_DEFAULT_BASE_BRANCH="main"
 RALPH_GATE_FIX_ROUNDS=2     # external-gate FAIL -> fix session -> re-gate, at most this many times
 RALPH_SESSION_TIMEOUT=7200  # seconds before a hung claude session (iteration, gate or fix) is killed
+RALPH_WAIT_FOR_RESET=0      # 1 = on a usage-limit hit, sleep (bounded) and resume instead of exiting (see #24)
+RALPH_USAGE_WAIT_SECONDS=1800  # bounded sleep before resuming when RALPH_WAIT_FOR_RESET=1
 
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
@@ -80,6 +82,18 @@ fi
 # zero times), and a non-number makes `seq` fail outright.
 if ! [[ "$RALPH_PREFLIGHT_HEALTH_RETRIES" =~ ^[1-9][0-9]*$ ]]; then
   echo "invalid RALPH_PREFLIGHT_HEALTH_RETRIES in $CONFIG_FILE: '$RALPH_PREFLIGHT_HEALTH_RETRIES' (must be a positive integer)" >&2
+  exit 1
+fi
+
+# Same rationale as above: validated at startup so a typo'd config value is
+# reported as the config error it is, not discovered mid-run as an unbounded
+# `sleep` or a `[[ ]]` that silently never matches.
+if ! [[ "$RALPH_WAIT_FOR_RESET" =~ ^[01]$ ]]; then
+  echo "invalid RALPH_WAIT_FOR_RESET in $CONFIG_FILE: '$RALPH_WAIT_FOR_RESET' (must be 0 or 1)" >&2
+  exit 1
+fi
+if ! [[ "$RALPH_USAGE_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "invalid RALPH_USAGE_WAIT_SECONDS in $CONFIG_FILE: '$RALPH_USAGE_WAIT_SECONDS' (must be a positive integer)" >&2
   exit 1
 fi
 
@@ -280,6 +294,17 @@ WATCHER_PID=""
 # git operations in this same worktree.
 CLAUDE_PGID=""
 
+# Published by run_claude_step so detect_usage_limit's callers can inspect the
+# same raw JSON / stderr it captured, without recomputing the naming
+# convention (${output%.txt}.raw.json etc.) at every call site.
+RUN_CLAUDE_RAW_JSON=""
+RUN_CLAUDE_ERR_FILE=""
+
+# Set by detect_usage_limit (USAGE_LIMIT_RESET_DESC) and by callers that act
+# on it (USAGE_LIMIT_HIT) -- see the "usage-limit awareness" section below.
+USAGE_LIMIT_HIT=0
+USAGE_LIMIT_RESET_DESC=""
+
 # --- stop handling (operator -> orchestrator) --------------------------------
 # Two levels, per the README:
 #   graceful  (stop file, or a first SIGINT)  -> let the in-flight iteration
@@ -289,33 +314,131 @@ CLAUDE_PGID=""
 # requeue_current_issue derives "its issue" from the branch checked out in
 # REPO_ROOT (the same issue-N convention the label_watcher already relies on),
 # but only actually requeues it if that issue is still ralph:in-progress: an
-# immediate stop landing during the external-gate/fix phase leaves the local
-# branch on the same issue-N, yet that issue is by then ralph:needs-review
-# (a PR already exists) -- blindly adding ralph:queued back would double-label
-# it and risk a second, redundant claim on an issue that's already in flight.
+# immediate stop (or, per #24, a usage-limit hit) landing during the
+# external-gate/fix phase leaves the local branch on the same issue-N, yet
+# that issue is by then ralph:needs-review (a PR already exists) -- blindly
+# adding ralph:queued back would double-label it and risk a second, redundant
+# claim on an issue that's already in flight. $1 is the human-readable reason
+# recorded in the lease-release comment, $2 the `[tag]` prefixing this
+# helper's log lines; both default to the original operator-stop wording so
+# existing callers are unaffected.
 requeue_current_issue() {
+  local reason="${1:-stopped by operator (immediate)}"
+  local log_tag="${2:-stop}"
   local br issue labels
   br=$(git -C "$REPO_ROOT" branch --show-current 2>/dev/null) || {
-    echo "[stop] could not determine the checked-out branch — nothing to requeue" | tee -a "$LOG_FILE"
+    echo "[$log_tag] could not determine the checked-out branch — nothing to requeue" | tee -a "$LOG_FILE"
     return 0
   }
   [[ "$br" =~ issue-([0-9]+) ]] || {
-    echo "[stop] branch '$br' carries no issue-N — nothing to requeue" | tee -a "$LOG_FILE"
+    echo "[$log_tag] branch '$br' carries no issue-N — nothing to requeue" | tee -a "$LOG_FILE"
     return 0
   }
   issue="${BASH_REMATCH[1]}"
   labels=$(gh issue view "$issue" --json labels --jq '[.labels[].name]|join(",")' 2>/dev/null) || {
-    echo "[stop] could not fetch issue #$issue's labels — leaving it untouched (fail closed)" | tee -a "$LOG_FILE"
+    echo "[$log_tag] could not fetch issue #$issue's labels — leaving it untouched (fail closed)" | tee -a "$LOG_FILE"
     return 0
   }
   [[ "$labels" == *"ralph:in-progress"* ]] || {
-    echo "[stop] issue #$issue is not ralph:in-progress (already ${labels:-unlabeled}) — nothing to requeue" | tee -a "$LOG_FILE"
+    echo "[$log_tag] issue #$issue is not ralph:in-progress (already ${labels:-unlabeled}) — nothing to requeue" | tee -a "$LOG_FILE"
     return 0
   }
   gh issue edit "$issue" --remove-label "ralph:in-progress" --add-label "ralph:queued" >/dev/null 2>&1 || true
-  gh issue comment "$issue" --body "🤖 ralph-gh lease released @ $(date -Iseconds) — session $SESSION_ID stopped by operator (immediate)" >/dev/null 2>&1 || true
+  gh issue comment "$issue" --body "🤖 ralph-gh lease released @ $(date -Iseconds) — session $SESSION_ID $reason" >/dev/null 2>&1 || true
   track_issue "$issue"
-  echo "[stop] issue #$issue requeued (ralph:queued)" | tee -a "$LOG_FILE"
+  echo "[$log_tag] issue #$issue requeued (ralph:queued)" | tee -a "$LOG_FILE"
+}
+
+# --- usage-limit awareness (#24) ---------------------------------------------
+# A session that dies because the ACCOUNT ran out of usage quota (a claude.ai
+# subscription plan's rolling session/weekly window) must never be misfiled as
+# ralph:failed:issue or ralph:failed:systemic -- that's the worst
+# misclassification this loop can make: a perfectly good issue punished for an
+# account-level condition it had nothing to do with. Subscription plans expose
+# no API to query remaining quota, so pre-run estimation is out of scope by
+# design (see #24) -- this is purely reactive, detected from what a session
+# already told us.
+#
+# detect_usage_limit RAW_JSON ERR_FILE -- true if the session's own CLI/API
+# diagnostics contain a documented usage-limit message. On a match, sets
+# USAGE_LIMIT_RESET_DESC to a best-effort, human-readable description of the
+# reset (never parsed back into a schedule beyond the bounded sleep in
+# wait_for_usage_limit).
+#
+# Gated on RAW_JSON's `.is_error` being `true` before ANY text is even
+# looked at. Confirmed empirically against the installed CLI (2.1.236) in
+# the exact mode ralph-gh runs (`claude --print --output-format json`): an
+# API-level rejection replaces `.result` with the CLI's own composed message
+# and sets `.is_error:true` (with `subtype:"success"` and an
+# `.api_error_status` code) -- `.errors` is null/absent for this class of
+# failure; it only appears on CLI-internal subtypes like error_max_turns.
+# `.is_error` is a client/transport-set flag the model's own text can never
+# influence, unlike `.result`'s prose on an ordinary successful turn -- so
+# gating on it first is what makes it safe to then read `.result` itself:
+# a session merely discussing usage limits in a normal reply (a gate/fix
+# session reviewing this very feature is a real, not hypothetical, example)
+# has `.is_error:false` and never reaches the text match below, regardless
+# of what it says.
+#
+# The main pattern is taken from
+# https://code.claude.com/docs/en/errors#youve-hit-your-session-limit ("You've
+# hit your session/weekly/Opus/... limit") as of the CLI version this was
+# written against. Anthropic does not document this as a stable API and can
+# reword it at any time without notice; per #24's AC4, anything that doesn't
+# match falls through to today's existing "no parsable result" handling
+# instead of being guessed at. The gap between "your" and "limit" is
+# optional and unenumerated -- it covers every quota name actually seen in
+# the installed CLI (`session`, `weekly`, `Opus`, `Sonnet`, `Fable 5`, `usage
+# credit`, ...) AND the bare `You've hit your limit` variant (no quota word,
+# used on the personal-overage path) -- capped at 40 chars and excluding
+# `.`/`"` so it can't run on past the sentence it belongs to. Two more exact
+# phrases cover the usage-credits-exhausted variant, which is worded
+# differently (no "hit your ... limit" at all) but is the same kind of
+# transient, reset-on-its-own condition -- unlike a sibling wording for a
+# permanently-disabled seat/entitlement, which is deliberately NOT matched
+# here: retrying that one would just spin forever.
+detect_usage_limit() {
+  local raw_json="$1" err_file="$2" is_error text
+  is_error="$(jq -r '.is_error // false' "$raw_json" 2>/dev/null)"
+  [[ "$is_error" == "true" ]] || return 1
+  text="$(jq -r '.errors[]? // empty, .result? // empty' "$raw_json" 2>/dev/null; cat "$err_file" 2>/dev/null)"
+  grep -qE "(You've hit your[^.\"]{0,40} limit|You're out of usage credits|Your org is out of usage)" <<< "$text" || return 1
+  # -i: the reset clause is prose, and sentence-initial/paraphrased
+  # capitalization ("Resets at 3pm.") is as likely as lowercase -- this only
+  # affects a human-readable log/comment string, never control flow. Capped
+  # and newline-stripped before use since it still originates in
+  # session-adjacent text (defensive hygiene, not a security boundary: this
+  # is passed as a single argument, never eval'd).
+  USAGE_LIMIT_RESET_DESC="$(grep -oiE '(resets?|continuing automatically at)[^."]*' <<< "$text" | head -1)"
+  [[ -z "$USAGE_LIMIT_RESET_DESC" ]] && USAGE_LIMIT_RESET_DESC="reset time unknown (not stated in session output)"
+  USAGE_LIMIT_RESET_DESC="${USAGE_LIMIT_RESET_DESC//$'\n'/ }"
+  USAGE_LIMIT_RESET_DESC="${USAGE_LIMIT_RESET_DESC:0:200}"
+  return 0
+}
+
+# session_hit_usage_limit RC -- the same question the iteration, gate and fix
+# steps all ask about the claude session run_claude_step just finished: did
+# it exit normally AND report a usage limit? A non-zero RC means
+# run_claude_step killed it on ITS OWN timeout, which is a real failure and
+# must keep its existing fail-closed handling; only an rc of 0 can be a
+# usage-limit hit. The raw JSON and stderr are read from the globals
+# run_claude_step published for exactly this.
+session_hit_usage_limit() {
+  [[ "$1" -eq 0 ]] || return 1
+  detect_usage_limit "$RUN_CLAUDE_RAW_JSON" "$RUN_CLAUDE_ERR_FILE"
+}
+
+# Bounded, best-effort wait across a usage-limit hit, used only when
+# RALPH_WAIT_FOR_RESET=1. The reset description above is prose, not a
+# machine-parseable timestamp we can trust across locales/formats (and print
+# mode may not even echo one) -- so this does not attempt to sleep until the
+# exact instant. Instead it sleeps once for the configured ceiling and lets
+# the loop's own next attempt discover whether the limit actually lifted: if
+# it hasn't, that attempt hits the same detection again and waits again,
+# which is a bounded poll, not an unbounded stall.
+wait_for_usage_limit() {
+  echo "[usage-limit] waiting ${RALPH_USAGE_WAIT_SECONDS}s (${USAGE_LIMIT_RESET_DESC}) before resuming" | tee -a "$LOG_FILE"
+  sleep "$RALPH_USAGE_WAIT_SECONDS"
 }
 
 handle_immediate_stop() {
@@ -479,6 +602,11 @@ run_claude_step() {
   local err_file="${2%.txt}.stderr.log"
   local kill_grace=10  # seconds a SIGTERM'd child gets before SIGKILL
   : > "$2"
+  # Published globally (not just local) so callers can run detect_usage_limit
+  # against the same files after this returns, on any exit path, without
+  # recomputing the naming convention themselves.
+  RUN_CLAUDE_RAW_JSON="$raw_json"
+  RUN_CLAUDE_ERR_FILE="$err_file"
 
   # Job control (`set -m`) puts the backgrounded claude session in its OWN
   # process group instead of the script's — without it, killing "$cpid" only
@@ -823,6 +951,15 @@ EOF
       echo "[gate] PR #$pr issue #$issue — external gate round $round" | tee -a "$LOG_FILE"
       local gate_rc=0
       run_claude_step "$gate_in" "$gate_out" || gate_rc=$?
+      # Checked before the timeout/kill branch below: a usage limit is never
+      # a real gate FAIL (see #24) -- stop this PR's round loop and propagate
+      # the hit to the main loop via USAGE_LIMIT_HIT instead of letting the
+      # round loop exhaust into ralph:failed:issue below.
+      if session_hit_usage_limit "$gate_rc"; then
+        echo "[usage-limit] PR #$pr issue #$issue — gate session hit a usage limit (${USAGE_LIMIT_RESET_DESC}), not a FAIL" | tee -a "$LOG_FILE"
+        USAGE_LIMIT_HIT=1
+        break
+      fi
       # The return code is authoritative and is checked BEFORE $gate_out: a
       # session force-killed mid-tool-call can leave a stray GATE:PASS in the
       # output window, but a merge gate must fail closed on a session it just
@@ -867,6 +1004,12 @@ EOF
       echo "[gate] PR #$pr — spawning fix session (round $round)" | tee -a "$LOG_FILE"
       local fix_rc=0
       run_claude_step "$fix_in" "$fix_out" || fix_rc=$?
+      # Same usage-limit guard as the gate step above.
+      if session_hit_usage_limit "$fix_rc"; then
+        echo "[usage-limit] PR #$pr issue #$issue — fix session hit a usage limit (${USAGE_LIMIT_RESET_DESC}), not a FAIL" | tee -a "$LOG_FILE"
+        USAGE_LIMIT_HIT=1
+        break
+      fi
       # Same fail-closed guard as the gate step: a timed-out/killed fix session's
       # return code overrides whatever raced into $fix_out — never re-gate a push
       # that may not have actually completed.
@@ -880,6 +1023,29 @@ EOF
         break
       fi
     done
+
+    # A usage-limit hit is never a verdict -- the PR stays exactly
+    # ralph:needs-review (no label touched) so it's re-gated on a later pass
+    # once quota is back, instead of being burned as ralph:failed:issue. This
+    # deliberately does NOT call requeue_current_issue (unlike the
+    # iteration-phase check below): that helper derives "the" issue from
+    # $REPO_ROOT's currently checked-out branch, which is reliable when a
+    # single iteration session owns the checkout for its own issue-N branch,
+    # but NOT here -- run_external_gates walks multiple PRs in one pass, and
+    # a gate/fix session that dies before it gets around to its own `git
+    # checkout $branch` would leave $REPO_ROOT sitting on whatever branch the
+    # PREVIOUS pr in this loop last checked out, misattributing the hit to
+    # the wrong issue. $issue is already known correctly here (from the PR's
+    # branch/body), so it's used directly for logging only -- no label change
+    # at all is the safe move, since ralph:needs-review already means "an
+    # open PR exists, awaiting a gate," which remains exactly true.
+    # Processing further PRs in this same pass would just hit the same
+    # account-wide wall again, so stop here; the main loop decides whether to
+    # exit or wait based on RALPH_WAIT_FOR_RESET.
+    if [[ "$USAGE_LIMIT_HIT" -eq 1 ]]; then
+      echo "[gate] PR #$pr issue #$issue — usage limit hit, leaving ralph:needs-review for a later pass" | tee -a "$LOG_FILE"
+      break
+    fi
 
     if [[ "$verdict" == "PASS" && $can_merge -eq 1 ]]; then
       if gh pr merge "$pr" --squash --delete-branch 2>>"$LOG_FILE"; then
@@ -901,6 +1067,64 @@ EOF
       echo "[gate] PR #$pr FAILED the external gate after fix rounds — ralph:failed:issue" | tee -a "$LOG_FILE"
     fi
   done <<< "$pr_list"
+}
+
+# Returns to the base branch and verifies the tree is clean before the main
+# loop is allowed to go around again. Shared by the normal end-of-iteration
+# path and the usage-limit wait-then-resume path (#24): both are about to let
+# the loop retry, and a `continue` that skipped this would leave the next
+# iteration's fresh `claude` session starting on a stray issue branch instead
+# of the base branch -- exactly the dirty-tree hazard the original end-of-loop
+# check exists to catch.
+#
+# Returns non-zero (having set EXIT_REASON) when the tree is dirty, i.e. when
+# the loop must stop; every call site is `... || break`. The status is
+# deliberate rather than a `break` inside the function body: bash resolves
+# loop-control keywords dynamically, so a bare `break` here WOULD reach the
+# caller's `while`, but only as a side effect invisible at the call site.
+reset_tree_before_next_iteration() {
+  git checkout "$RALPH_DEFAULT_BASE_BRANCH" --quiet 2>/dev/null || true
+  clean_tree && return 0
+  echo "working tree dirty after iteration — stopping instead of compounding damage" | tee -a "$LOG_FILE"
+  git status --short | tee -a "$LOG_FILE"
+  EXIT_REASON="dirty-tree"
+  return 1
+}
+
+# iter_promise_exit_reason -- prints the matching exit reason
+# (queue-empty/systemic-failure/cascade-fail/halt) if $ITER_OUTPUT carries
+# that terminal <promise> tag (whole-line, backtick-tolerant -- see the
+# dedicated promise-check block below for why), or nothing if none matched.
+# Shared with the gate/fix usage-limit branch (#24): an explicit stop signal
+# the iteration session already gave THIS pass must win over resuming past a
+# LATER, unrelated usage-limit hit in the gate/fix phase -- otherwise
+# RALPH_WAIT_FOR_RESET=1 would silently discard e.g. a HALT the operator's
+# autonomy mode required, and go claim a new issue instead.
+iter_promise_exit_reason() {
+  if grep -qE '^[[:space:]]*`{0,2}<promise>QUEUE_EMPTY</promise>`{0,2}[[:space:]]*$'   "$ITER_OUTPUT"; then echo "queue-empty";      return; fi
+  if grep -qE '^[[:space:]]*`{0,2}<promise>SYSTEMIC_FAIL</promise>`{0,2}[[:space:]]*$' "$ITER_OUTPUT"; then echo "systemic-failure"; return; fi
+  if grep -qE '^[[:space:]]*`{0,2}<promise>CASCADE_FAIL</promise>`{0,2}[[:space:]]*$'  "$ITER_OUTPUT"; then echo "cascade-fail";     return; fi
+  if grep -qE '^[[:space:]]*`{0,2}<promise>HALT</promise>`{0,2}[[:space:]]*$'          "$ITER_OUTPUT"; then echo "halt";             return; fi
+}
+
+# What the main loop does after a usage-limit hit, in one place for both the
+# iteration-session and the gate/fix-session call sites. Returns 0 when the
+# loop may go around again (RALPH_WAIT_FOR_RESET=1: back to the base branch,
+# then a bounded sleep), non-zero when it must stop -- with EXIT_REASON
+# already set, either to the usage limit itself or to the dirty tree found on
+# the way out. Call sites are `usage_limit_resume_or_stop || break` +
+# `continue`. Tree reset runs BEFORE the sleep, not after: a session that died
+# mid-work is already dirty the moment it exits, not partway through the
+# wait, so checking first means a run that's going to abort on a dirty tree
+# does so immediately instead of only after burning the full
+# RALPH_USAGE_WAIT_SECONDS ceiling first.
+usage_limit_resume_or_stop() {
+  if [[ "$RALPH_WAIT_FOR_RESET" -ne 1 ]]; then
+    EXIT_REASON="usage limit — ${USAGE_LIMIT_RESET_DESC}"
+    return 1
+  fi
+  reset_tree_before_next_iteration || return 1
+  wait_for_usage_limit
 }
 
 while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
@@ -968,7 +1192,9 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
 
   label_watcher & WATCHER_PID=$!
 
-  if ! run_claude_step "$ITER_INPUT" "$ITER_OUTPUT"; then
+  iter_rc=0
+  run_claude_step "$ITER_INPUT" "$ITER_OUTPUT" || iter_rc=$?
+  if [[ $iter_rc -ne 0 ]]; then
     echo "iteration session timed out (continuing — gates still run on any open PR)" | tee -a "$LOG_FILE"
   fi
 
@@ -984,6 +1210,20 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   iter_branch=$(git -C "$REPO_ROOT" branch --show-current 2>/dev/null) || true
   if [[ "$iter_branch" =~ issue-([0-9]+) ]]; then
     track_issue "${BASH_REMATCH[1]}"
+  fi
+
+  # Usage-limit check (#24): a session that dies because the account ran out
+  # of quota must never be misfiled as ralph:failed:issue/systemic. Checked
+  # before the binding gate below, which would just spawn more sessions
+  # against the same wall. requeue_current_issue no-ops safely if the
+  # iteration session DID reach CLAIM (ralph:in-progress) but the account ran
+  # dry before it could do anything else than declare that; it also no-ops if
+  # the session never claimed anything at all, same as today.
+  if session_hit_usage_limit "$iter_rc"; then
+    echo "[usage-limit] iteration session hit a usage limit (${USAGE_LIMIT_RESET_DESC}) — not a failure, requeuing instead" | tee -a "$LOG_FILE"
+    requeue_current_issue "hit a usage limit (${USAGE_LIMIT_RESET_DESC}), requeued for retry (not a failure)" "usage-limit"
+    usage_limit_resume_or_stop || break
+    continue
   fi
 
   # Binding review gate + merge — deterministic, not skippable by the session.
@@ -1008,23 +1248,38 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   # loop.
   run_external_gates
 
+  # Same usage-limit check as above, for a gate/fix session hit inside
+  # run_external_gates (USAGE_LIMIT_HIT is set there, since that's where the
+  # per-PR issue number is already known). Reset immediately after reading so
+  # it never leaks into the next pass.
+  if [[ "$USAGE_LIMIT_HIT" -eq 1 ]]; then
+    USAGE_LIMIT_HIT=0
+    echo "[usage-limit] external gate/fix session hit a usage limit (${USAGE_LIMIT_RESET_DESC}) — not a failure" | tee -a "$LOG_FILE"
+    # The ITERATION session (already completed, before the gate/fix session
+    # that just hit the limit) may have signaled a terminal <promise> of its
+    # own -- that instruction outranks resuming, see iter_promise_exit_reason.
+    promise_reason="$(iter_promise_exit_reason)"
+    if [[ -n "$promise_reason" ]]; then
+      echo "[usage-limit] iteration session already signaled $promise_reason — honoring that instead of resuming" | tee -a "$LOG_FILE"
+      EXIT_REASON="$promise_reason"
+      break
+    fi
+    usage_limit_resume_or_stop || break
+    continue
+  fi
+
   # Whole-line matches only: a session QUOTING the contract must not stop the
   # loop. Backticks are tolerated on top of that anchor -- CLAUDE.md's own
   # contract list shows each tag inline-coded (`<promise>...</promise>`), and
   # a session's literal rendering of that markdown is a valid emission, not
   # a quote of the contract (see #29).
-  if grep -qE '^[[:space:]]*`{0,2}<promise>QUEUE_EMPTY</promise>`{0,2}[[:space:]]*$'   "$ITER_OUTPUT"; then EXIT_REASON="queue-empty";      break; fi
-  if grep -qE '^[[:space:]]*`{0,2}<promise>SYSTEMIC_FAIL</promise>`{0,2}[[:space:]]*$' "$ITER_OUTPUT"; then EXIT_REASON="systemic-failure"; break; fi
-  if grep -qE '^[[:space:]]*`{0,2}<promise>CASCADE_FAIL</promise>`{0,2}[[:space:]]*$'  "$ITER_OUTPUT"; then EXIT_REASON="cascade-fail";     break; fi
-  if grep -qE '^[[:space:]]*`{0,2}<promise>HALT</promise>`{0,2}[[:space:]]*$'          "$ITER_OUTPUT"; then EXIT_REASON="halt";             break; fi
-
-  git checkout "$RALPH_DEFAULT_BASE_BRANCH" --quiet 2>/dev/null || true
-  if ! clean_tree; then
-    echo "working tree dirty after iteration — stopping instead of compounding damage" | tee -a "$LOG_FILE"
-    git status --short | tee -a "$LOG_FILE"
-    EXIT_REASON="dirty-tree"
+  promise_reason="$(iter_promise_exit_reason)"
+  if [[ -n "$promise_reason" ]]; then
+    EXIT_REASON="$promise_reason"
     break
   fi
+
+  reset_tree_before_next_iteration || break
   sleep 2
 done
 
