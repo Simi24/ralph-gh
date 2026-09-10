@@ -599,7 +599,7 @@ upsert_pr_status_comment() {
   # safely). `last` picks the most recent match if, somehow, more than one
   # ever existed; normally there is at most one, by construction.
   existing=$(gh api "repos/{owner}/{repo}/issues/$pr/comments" --paginate 2>/dev/null | \
-    jq -s --arg h "$PR_STATUS_HEADER" '[.[][] | select(.body | startswith($h))] | last // empty' 2>/dev/null)
+    jq -s --arg h "$PR_STATUS_HEADER" '[.[][] | select((.body // "") | startswith($h))] | last // empty' 2>/dev/null)
   # Fail CLOSED on the read itself (distinct from the writes below, which fail
   # open): a transient gh/jq error here must never be treated the same as "no
   # existing comment yet", or it falls through to the `else` and creates a
@@ -657,10 +657,16 @@ label_watcher() {
 
     elapsed=$(( $(date +%s) - start_ts ))
     if (( elapsed - last_heartbeat >= 300 )); then
-      last_heartbeat=$elapsed
       local pr
       pr=$(gh pr list --head "$br" --state open --json number --jq '.[0].number // empty' 2>/dev/null)
-      [[ -n "$pr" ]] && upsert_pr_status_comment "$pr" "session alive, elapsed $(( elapsed / 60 ))m"
+      # Only consume this 5-minute window once there's actually a PR to post
+      # to -- otherwise a tick landing before the PR opens burns the window
+      # for nothing, and the first real heartbeat lands 5 minutes later than
+      # it should (the exact dark-period stretch this feature exists for).
+      if [[ -n "$pr" ]]; then
+        last_heartbeat=$elapsed
+        upsert_pr_status_comment "$pr" "session alive, elapsed $(( elapsed / 60 ))m"
+      fi
     fi
   done
 }
