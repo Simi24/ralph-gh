@@ -234,7 +234,11 @@ SESSION_ID="ralph-$(date +%s)"
 
 # Predeclared before the EXIT trap is registered (below) so cleanup() can
 # always reference them safely under `set -u`, however early the trap fires.
-EXIT_REASON="unknown"
+# "interrupted (no exit reason recorded)" is a sentinel, not a conclusion: it
+# means nothing between here and the EXIT trap explained why the shell exited
+# — see cleanup() and the post-loop resolution below for why it must stay a
+# sentinel instead of a guessed value like "max-iterations".
+EXIT_REASON="interrupted (no exit reason recorded)"
 ITERATION=0
 STOP_REQUESTED=0
 
@@ -340,15 +344,18 @@ handle_graceful_stop() {
 
 cleanup() {
   # Captured before anything else touches $? (every command below would
-  # otherwise clobber it). "max-iterations" and "unknown" are the two values
-  # EXIT_REASON can hold *before* one of the loop's own break/exit sites sets
-  # it explicitly (see their assignments above) — i.e. they're optimistic
-  # defaults armed ahead of time, not evidence the run actually got there.
-  # A nonzero $? landing on one of them means the shell exited some OTHER
-  # way — an unbound-variable abort under `set -u`, a signal with no trap of
-  # its own — so the default is a lie and gets replaced with the truth.
+  # otherwise clobber it). EXIT_REASON starts (and, after the loop, is
+  # resolved back to) the "interrupted (no exit reason recorded)" sentinel —
+  # never a guessed conclusion like "max-iterations" — so this check can't
+  # misfire in either direction. It used to compare $rc against 0 and the
+  # reason against pre-armed conclusions, but bash resets $? to 0 before
+  # running the EXIT trap for most untrapped fatal signals (SIGPIPE, SIGUSR1,
+  # SIGABRT, ...), and a graceful stop's own iteration can legitimately end
+  # with rc=130 (SIGINT landing on the loop's trailing `sleep 2`) — both
+  # produced a false verdict under the old rc-based heuristic. Only the
+  # sentinel surviving to here means nothing else ever explained the exit.
   local rc=$?
-  if [[ "$rc" -ne 0 && ( "$EXIT_REASON" == "max-iterations" || "$EXIT_REASON" == "unknown" ) ]]; then
+  if [[ "$EXIT_REASON" == interrupted* ]]; then
     EXIT_REASON="error (exit $rc)"
   fi
 
@@ -853,7 +860,6 @@ EOF
   done <<< "$pr_list"
 }
 
-EXIT_REASON="max-iterations"
 while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   # Checked at the iteration boundary, i.e. before claiming any new work:
   # a stop file dropped since the last check has the same effect as a first
@@ -938,7 +944,18 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   fi
 
   # Binding review gate + merge — deterministic, not skippable by the session.
+  # A first Ctrl-C is ignored for the duration of this call: without job
+  # control, every foreground gh/git child this function runs shares the
+  # script's process group and would otherwise take the terminal's SIGINT
+  # itself (a merge command dying mid-flight, a PASS verdict misread as a
+  # failed grep, ...) — exactly the "gate pass finishes normally" promise
+  # this trap exists to keep. SIGTERM (immediate stop) is untouched, so it
+  # still aborts right through this. The STOP file remains the
+  # interruption-safe lever if an operator needs to act on a hung gate call;
+  # a Ctrl-C ignored here simply needs pressing again once the pass returns.
+  trap '' INT
   run_external_gates
+  trap handle_graceful_stop INT
 
   # Whole-line matches only: a session QUOTING the contract must not stop the loop
   if grep -qE '^[[:space:]]*<promise>QUEUE_EMPTY</promise>[[:space:]]*$'   "$ITER_OUTPUT"; then EXIT_REASON="queue-empty";      break; fi
@@ -955,6 +972,22 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   fi
   sleep 2
 done
+
+# EXIT_REASON is still the "interrupted" sentinel only if the loop above
+# exited via its own condition (ITERATION reached MAX_ITERATIONS) rather than
+# one of the explicit break sites, each of which already set its own reason.
+# That "the loop condition went false" case is ambiguous on its own: a SIGINT
+# landing on the trailing `sleep 2` of the LAST iteration sets STOP_REQUESTED
+# (via handle_graceful_stop) but doesn't break — the loop was going to end
+# anyway — so the operator's stop request must still win the reason over the
+# coincidental max-iterations completion.
+if [[ "$EXIT_REASON" == interrupted* ]]; then
+  if [[ "$STOP_REQUESTED" -eq 1 ]]; then
+    EXIT_REASON="stopped by operator"
+  else
+    EXIT_REASON="max-iterations"
+  fi
+fi
 
 # Final section and exit summary are written by cleanup() (the EXIT trap),
 # so every exit path gets one — see the trap registration near SESSION_ID.
