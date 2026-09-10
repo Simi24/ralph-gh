@@ -359,49 +359,73 @@ requeue_current_issue() {
 # design (see #24) -- this is purely reactive, detected from what a session
 # already told us.
 #
-# detect_usage_limit FILE... -- true if any of the given files (raw JSON
-# result, stderr, or the extracted output text) contains a documented
-# usage-limit message. On a match, sets USAGE_LIMIT_RESET_DESC to a
-# best-effort, human-readable description of the reset (never parsed back
-# into a schedule beyond the bounded sleep in wait_for_usage_limit).
+# detect_usage_limit RAW_JSON ERR_FILE -- true if the session's own CLI/API
+# diagnostics (NOT its conversational reply) contain a documented usage-limit
+# message. On a match, sets USAGE_LIMIT_RESET_DESC to a best-effort,
+# human-readable description of the reset (never parsed back into a schedule
+# beyond the bounded sleep in wait_for_usage_limit).
 #
-# The patterns below are taken from
-# https://code.claude.com/docs/en/errors#youve-hit-your-session-limit (the
-# short "You've hit your ... limit" messages) and
-# https://code.claude.com/docs/en/interactive-mode#wait-for-a-usage-limit-to-reset
-# (the "Usage limit reached" / "Usage limit reset" wait-line wording) as of
-# the CLI version this was written against. Anthropic does not document this
-# as a stable API and can reword it at any time without notice -- this
-# function is deliberately narrow (whole phrases, not a loose "usage limit"
-# substring) so it can never fire on a session that merely quotes the CLI's
-# own docs or /usage output, and per #24's AC4, anything that doesn't match
-# falls through to today's existing "no parsable result" handling instead of
-# being guessed at. The only wildcard is the token naming WHICH quota ran out
-# ("session", "weekly", "Opus", "5-hour", ...), which varies by plan and
-# model -- hence [A-Za-z0-9-]+ rather than letters only.
+# Deliberately scans ONLY RAW_JSON's `.errors[]` (the CLI's own result schema
+# carries an `errors` array on every non-success subtype --
+# error_during_execution, error_max_turns, etc.) and stderr -- NEVER the
+# model's own free-form `.result` text. That distinction is load-bearing, not
+# cosmetic: `.result` is text the MODEL authored, so a session merely
+# discussing usage limits (a gate/fix session reviewing this very feature is
+# a real, not hypothetical, example) can say the trigger phrase without an
+# actual limit ever being hit. `errors`/stderr are populated by the CLI/API
+# layer, which a session's own output can't forge.
+#
+# The pattern is taken from
+# https://code.claude.com/docs/en/errors#youve-hit-your-session-limit ("You've
+# hit your session/weekly/Opus/... limit") as of the CLI version this was
+# written against. Anthropic does not document this as a stable API and can
+# reword it at any time without notice; per #24's AC4, anything that doesn't
+# match falls through to today's existing "no parsable result" handling
+# instead of being guessed at. The wildcard between "your" and "limit" covers
+# every quota name actually seen in the installed CLI (`session`, `weekly`,
+# `Opus`, `Sonnet`, `Fable 5`, `usage credit`, ...) without enumerating them --
+# capped at 40 chars and excluding `.`/`"` so it can't run on past the
+# sentence it belongs to.
+#
+# UNCONFIRMED CAVEAT: this message is rendered by the CLI's interactive
+# terminal UI (a notice banner). Whether a `--print --output-format json`
+# session (what ralph-gh always runs) reuses the identical wording in its
+# `errors` array when it hits the same account-level condition has not been
+# observed directly -- there is no subscription-quota-specific `subtype` in
+# the CLI's documented result schema, only generic ones
+# (error_during_execution and friends), so the limit text, if present at all
+# in print mode, most likely arrives as one of `errors[]`'s free-text
+# entries. This is the honest edge of "best-effort" promised by the issue.
 detect_usage_limit() {
-  local text
-  text="$(cat "$@" 2>/dev/null)"
-  grep -qE "(You've hit your [A-Za-z0-9-]+ limit|Usage limit reached|Usage limit reset)" <<< "$text" || return 1
-  # -i here too: the reset clause is prose, and sentence-initial/paraphrased
-  # capitalization ("Resets at 3pm.", "Continuing automatically at 4pm") is
-  # exactly as likely as the lowercase form matched above -- this only
-  # affects a human-readable log/comment string, never control flow.
+  local raw_json="$1" err_file="$2" text
+  text="$(jq -r '.errors[]? // empty' "$raw_json" 2>/dev/null; cat "$err_file" 2>/dev/null)"
+  grep -qE "You've hit your [^.\"]{1,40} limit" <<< "$text" || return 1
+  # -i: the reset clause is prose, and sentence-initial/paraphrased
+  # capitalization ("Resets at 3pm.") is as likely as lowercase -- this only
+  # affects a human-readable log/comment string, never control flow. Capped
+  # and newline-stripped before use (see the call sites) since it still
+  # originates in session-adjacent text.
   USAGE_LIMIT_RESET_DESC="$(grep -oiE '(resets?|continuing automatically at)[^."]*' <<< "$text" | head -1)"
   [[ -z "$USAGE_LIMIT_RESET_DESC" ]] && USAGE_LIMIT_RESET_DESC="unknown (not stated in session output)"
+  # Defensive hygiene, not a security boundary (this text is passed as a
+  # single argument, never eval'd): a stray newline would corrupt the
+  # single-line [gate]/[usage-limit] log format, and an unbounded length
+  # could bloat a GitHub comment or last-run.md indefinitely.
+  USAGE_LIMIT_RESET_DESC="${USAGE_LIMIT_RESET_DESC//$'\n'/ }"
+  USAGE_LIMIT_RESET_DESC="${USAGE_LIMIT_RESET_DESC:0:200}"
   return 0
 }
 
-# session_hit_usage_limit RC OUTPUT_FILE -- the same question the gate and
-# fix steps both ask about the claude session run_claude_step just finished:
-# did it exit normally AND report a usage limit? A non-zero RC means
+# session_hit_usage_limit RC -- the same question the iteration, gate and fix
+# steps all ask about the claude session run_claude_step just finished: did
+# it exit normally AND report a usage limit? A non-zero RC means
 # run_claude_step killed it on ITS OWN timeout, which is a real failure and
 # must keep its existing fail-closed handling; only an rc of 0 can be a
 # usage-limit hit. The raw JSON and stderr are read from the globals
 # run_claude_step published for exactly this.
 session_hit_usage_limit() {
   [[ "$1" -eq 0 ]] || return 1
-  detect_usage_limit "$RUN_CLAUDE_RAW_JSON" "$RUN_CLAUDE_ERR_FILE" "$2"
+  detect_usage_limit "$RUN_CLAUDE_RAW_JSON" "$RUN_CLAUDE_ERR_FILE"
 }
 
 # Bounded, best-effort wait across a usage-limit hit, used only when
@@ -931,7 +955,7 @@ EOF
       # a real gate FAIL (see #24) -- stop this PR's round loop and propagate
       # the hit to the main loop via USAGE_LIMIT_HIT instead of letting the
       # round loop exhaust into ralph:failed:issue below.
-      if session_hit_usage_limit "$gate_rc" "$gate_out"; then
+      if session_hit_usage_limit "$gate_rc"; then
         echo "[usage-limit] PR #$pr issue #$issue — gate session hit a usage limit (${USAGE_LIMIT_RESET_DESC}), not a FAIL" | tee -a "$LOG_FILE"
         USAGE_LIMIT_HIT=1
         break
@@ -981,7 +1005,7 @@ EOF
       local fix_rc=0
       run_claude_step "$fix_in" "$fix_out" || fix_rc=$?
       # Same usage-limit guard as the gate step above.
-      if session_hit_usage_limit "$fix_rc" "$fix_out"; then
+      if session_hit_usage_limit "$fix_rc"; then
         echo "[usage-limit] PR #$pr issue #$issue — fix session hit a usage limit (${USAGE_LIMIT_RESET_DESC}), not a FAIL" | tee -a "$LOG_FILE"
         USAGE_LIMIT_HIT=1
         break
@@ -1147,7 +1171,9 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
 
   label_watcher & WATCHER_PID=$!
 
-  if ! run_claude_step "$ITER_INPUT" "$ITER_OUTPUT"; then
+  iter_rc=0
+  run_claude_step "$ITER_INPUT" "$ITER_OUTPUT" || iter_rc=$?
+  if [[ $iter_rc -ne 0 ]]; then
     echo "iteration session timed out (continuing — gates still run on any open PR)" | tee -a "$LOG_FILE"
   fi
 
@@ -1172,7 +1198,7 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   # iteration session DID reach CLAIM (ralph:in-progress) but the account ran
   # dry before it could do anything else than declare that; it also no-ops if
   # the session never claimed anything at all, same as today.
-  if detect_usage_limit "$RUN_CLAUDE_RAW_JSON" "$RUN_CLAUDE_ERR_FILE" "$ITER_OUTPUT"; then
+  if session_hit_usage_limit "$iter_rc"; then
     echo "[usage-limit] iteration session hit a usage limit (${USAGE_LIMIT_RESET_DESC}) — not a failure, requeuing instead" | tee -a "$LOG_FILE"
     requeue_current_issue "hit a usage limit (${USAGE_LIMIT_RESET_DESC}), requeued for retry (not a failure)" "usage-limit"
     usage_limit_resume_or_stop || break
