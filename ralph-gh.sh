@@ -117,6 +117,7 @@ fi
 STATE_DIR="$REPO_ROOT/.ralph-gh"
 LOG_FILE="$STATE_DIR/run.log"
 LAST_RUN="$STATE_DIR/last-run.md"
+STOP_FILE="$STATE_DIR/STOP"
 mkdir -p "$STATE_DIR"
 
 # Keep runtime state out of git via .git/info/exclude (local-only, so this
@@ -220,7 +221,47 @@ if [[ -n "$RALPH_PREFLIGHT_HEALTH_URL" ]] && ! wait_for_preflight_health; then
   exit 1
 fi
 
+# A stop file is a one-shot request scoped to the run that consumes it: one
+# left behind by a prior run (crashed before reaching the check, or never
+# cleaned up) must never block a new run from starting. Consumed here — past
+# every startup abort above (dirty tree, wrong branch, fetch failure,
+# preflight) — so a second, failed launch can never disarm a stop request a
+# still-running instance is waiting on: if it ran before those aborts, the
+# failed launch would delete the file out from under the live run.
+rm -f "$STOP_FILE"
+
 SESSION_ID="ralph-$(date +%s)"
+
+# Predeclared before the EXIT trap is registered (below) so cleanup() can
+# always reference them safely under `set -u`, however early the trap fires.
+# "interrupted (no exit reason recorded)" is a sentinel, not a conclusion: it
+# means nothing between here and the EXIT trap explained why the shell exited
+# — see cleanup() and the post-loop resolution below for why it must stay a
+# sentinel instead of a guessed value like "max-iterations".
+EXIT_REASON="interrupted (no exit reason recorded)"
+ITERATION=0
+STOP_REQUESTED=0
+
+# Written here (not at the bottom of the script) so the header exists before
+# the EXIT trap is even registered — no exit path can append a Final section
+# to a header-less file.
+{
+  echo ""
+  echo "================================================================="
+  echo "ralph-gh session: $SESSION_ID"
+  echo "started: $(date -Iseconds)"
+  echo "autonomy=$AUTONOMY  max_iterations=$MAX_ITERATIONS"
+  echo "repo=$REPO_ROOT"
+  echo "================================================================="
+} | tee -a "$LOG_FILE"
+
+{
+  echo "# ralph-gh run — $SESSION_ID"
+  echo "Started: $(date -Iseconds)"
+  echo "Repo: $REPO_ROOT"
+  echo "Autonomy: $AUTONOMY"
+  echo ""
+} > "$LAST_RUN"
 
 # Session-scoped record of issues this run actually acted on (label change,
 # lease/gate/reconcile comment). label_watcher runs as a background job, so
@@ -238,14 +279,157 @@ WATCHER_PID=""
 # an unsupervised orphan, still able to commit/push, racing the next run's
 # git operations in this same worktree.
 CLAUDE_PGID=""
+
+# --- stop handling (operator -> orchestrator) --------------------------------
+# Two levels, per the README:
+#   graceful  (stop file, or a first SIGINT)  -> let the in-flight iteration
+#     AND its external-gate pass finish normally, claim nothing new, then exit.
+#   immediate (a second SIGINT, or any SIGTERM) -> kill the in-flight claude
+#     session right now, requeue its issue, exit without waiting.
+# requeue_current_issue derives "its issue" from the branch checked out in
+# REPO_ROOT (the same issue-N convention the label_watcher already relies on),
+# but only actually requeues it if that issue is still ralph:in-progress: an
+# immediate stop landing during the external-gate/fix phase leaves the local
+# branch on the same issue-N, yet that issue is by then ralph:needs-review
+# (a PR already exists) -- blindly adding ralph:queued back would double-label
+# it and risk a second, redundant claim on an issue that's already in flight.
+requeue_current_issue() {
+  local br issue labels
+  br=$(git -C "$REPO_ROOT" branch --show-current 2>/dev/null) || {
+    echo "[stop] could not determine the checked-out branch — nothing to requeue" | tee -a "$LOG_FILE"
+    return 0
+  }
+  [[ "$br" =~ issue-([0-9]+) ]] || {
+    echo "[stop] branch '$br' carries no issue-N — nothing to requeue" | tee -a "$LOG_FILE"
+    return 0
+  }
+  issue="${BASH_REMATCH[1]}"
+  labels=$(gh issue view "$issue" --json labels --jq '[.labels[].name]|join(",")' 2>/dev/null) || {
+    echo "[stop] could not fetch issue #$issue's labels — leaving it untouched (fail closed)" | tee -a "$LOG_FILE"
+    return 0
+  }
+  [[ "$labels" == *"ralph:in-progress"* ]] || {
+    echo "[stop] issue #$issue is not ralph:in-progress (already ${labels:-unlabeled}) — nothing to requeue" | tee -a "$LOG_FILE"
+    return 0
+  }
+  gh issue edit "$issue" --remove-label "ralph:in-progress" --add-label "ralph:queued" >/dev/null 2>&1 || true
+  gh issue comment "$issue" --body "🤖 ralph-gh lease released @ $(date -Iseconds) — session $SESSION_ID stopped by operator (immediate)" >/dev/null 2>&1 || true
+  track_issue "$issue"
+  echo "[stop] issue #$issue requeued (ralph:queued)" | tee -a "$LOG_FILE"
+}
+
+handle_immediate_stop() {
+  # Bash blocks a signal from re-entering the handler that's already running
+  # for IT, but INT and TERM are different traps: a Ctrl-C landing here while
+  # a TERM-triggered run is mid-flight would otherwise re-enter via
+  # handle_graceful_stop (still armed for INT) and fire a second requeue +
+  # duplicate lease-release comment. Disarmed for the rest of this handler's
+  # life (it always ends in `exit`, so nothing re-arms them).
+  trap '' INT TERM
+  echo "" | tee -a "$LOG_FILE"
+  echo "[stop] immediate stop requested — killing the in-flight session and requeuing its issue" | tee -a "$LOG_FILE"
+  # label_watcher polls every 45s and, on its own tick, auto-claims any
+  # branch-matching issue that's still ralph:queued. Stop it FIRST: otherwise
+  # a tick landing between requeue_current_issue's label edit and its comment
+  # below would relabel the issue straight back to ralph:in-progress with a
+  # fabricated "lease acquired" comment, undoing the requeue this handler
+  # exists to perform.
+  if [[ -n "$WATCHER_PID" ]]; then
+    kill "$WATCHER_PID" 2>/dev/null || true
+    wait "$WATCHER_PID" 2>/dev/null || true
+    WATCHER_PID=""
+  fi
+  if [[ -n "$CLAUDE_PGID" ]]; then
+    kill -TERM -"$CLAUDE_PGID" 2>/dev/null || true
+    sleep 1
+    kill -KILL -"$CLAUDE_PGID" 2>/dev/null || true
+  fi
+  requeue_current_issue
+  EXIT_REASON="stopped by operator (immediate)"
+  exit 0
+}
+
+handle_graceful_stop() {
+  # A second SIGINT while one is already pending escalates to immediate —
+  # the operator asked twice, they mean it.
+  if [[ "$STOP_REQUESTED" -eq 1 ]]; then
+    handle_immediate_stop
+    return
+  fi
+  STOP_REQUESTED=1
+  echo "" | tee -a "$LOG_FILE"
+  echo "[stop] graceful stop requested (SIGINT) — the in-flight iteration and its gate pass will finish, then the loop exits without claiming a new issue. Press Ctrl-C again (or send SIGTERM) to stop immediately instead." | tee -a "$LOG_FILE"
+}
+
 cleanup() {
+  # Captured before anything else touches $? (every command below would
+  # otherwise clobber it). EXIT_REASON starts (and, after the loop, is
+  # resolved back to) the "interrupted (no exit reason recorded)" sentinel —
+  # never a guessed conclusion like "max-iterations" — so this check can't
+  # misfire in either direction. It used to compare $rc against 0 and the
+  # reason against pre-armed conclusions, but bash resets $? to 0 before
+  # running the EXIT trap for most untrapped fatal signals (SIGPIPE, SIGUSR1,
+  # SIGABRT, ...), and a graceful stop's own iteration can legitimately end
+  # with rc=130 (SIGINT landing on the loop's trailing `sleep 2`) — both
+  # produced a false verdict under the old rc-based heuristic. Only the
+  # sentinel surviving to here means nothing else ever explained the exit.
+  local rc=$?
+  if [[ "$EXIT_REASON" == interrupted* ]]; then
+    EXIT_REASON="error (exit $rc)"
+  fi
+
+  # A signal landing mid-cleanup must not re-enter handle_immediate_stop
+  # (which would call `exit` again) and truncate the Final section below —
+  # cleanup runs to completion once it starts, uninterrupted. HUP is included
+  # too: it's armed for the whole script's life (a dropped terminal/ssh
+  # session), and left unblocked here it would fire mid-write of the
+  # `## Final` section below and truncate it — the exact failure this trap
+  # exists to prevent for INT/TERM.
+  trap '' INT TERM HUP
   [[ -n "$WATCHER_PID" ]] && kill "$WATCHER_PID" 2>/dev/null || true
   if [[ -n "$CLAUDE_PGID" ]]; then
     kill -TERM -"$CLAUDE_PGID" 2>/dev/null || true
     kill -KILL -"$CLAUDE_PGID" 2>/dev/null || true
   fi
+
+  # Moved here (from the bottom of the script) so every exit path — normal
+  # completion, graceful stop, immediate stop, or an early `exit 1` — writes
+  # a truthful Final section instead of only the happy path.
+  {
+    echo ""
+    echo "## Final"
+    echo "- Iterations run: $ITERATION"
+    echo "- Exit reason: $EXIT_REASON"
+    echo "- Ended: $(date -Iseconds)"
+    echo ""
+    echo "## Issues touched this session"
+    # Session-scoped, from $TOUCHED_ISSUES_FILE (recorded live as the run acted
+    # on each issue) — NOT a global label sweep. A global sweep would list
+    # every issue ever labeled ralph:* across every past run (ralph:done is
+    # never removed, so it only grows) and silently truncate past --limit.
+    if [[ -s "$TOUCHED_ISSUES_FILE" ]]; then
+      while read -r touched_issue; do
+        [[ -z "$touched_issue" ]] && continue
+        gh issue view "$touched_issue" --json number,title,labels \
+          --jq '"- #\(.number) \(.title) [\(.labels | map(.name) | join(","))]"' 2>/dev/null \
+          || echo "- #$touched_issue (could not fetch current state)"
+      done < <(sort -un "$TOUCHED_ISSUES_FILE")
+    else
+      echo "(none)"
+    fi
+  } >> "$LAST_RUN"
+
+  echo ""
+  echo "ralph-gh exited: $EXIT_REASON (after $ITERATION iterations)"
+  echo "summary: $LAST_RUN"
 }
-trap cleanup EXIT INT TERM
+trap handle_graceful_stop INT
+trap handle_immediate_stop TERM
+# A dropped terminal/ssh session sends SIGHUP, and bash runs the EXIT trap
+# for it with $? already reset to 0 — cleanup()'s rc-based check can't see
+# it, so the exit reason is set directly, here, before that trap ever runs.
+trap 'EXIT_REASON="killed (SIGHUP)"; exit 129' HUP
+trap cleanup EXIT
 
 # --- label watcher -----------------------------------------------------------
 # Iteration sessions sometimes skip the CLAIM label swap (protocol violation,
@@ -719,27 +903,20 @@ EOF
   done <<< "$pr_list"
 }
 
-{
-  echo ""
-  echo "================================================================="
-  echo "ralph-gh session: $SESSION_ID"
-  echo "started: $(date -Iseconds)"
-  echo "autonomy=$AUTONOMY  max_iterations=$MAX_ITERATIONS"
-  echo "repo=$REPO_ROOT"
-  echo "================================================================="
-} | tee -a "$LOG_FILE"
-
-{
-  echo "# ralph-gh run — $SESSION_ID"
-  echo "Started: $(date -Iseconds)"
-  echo "Repo: $REPO_ROOT"
-  echo "Autonomy: $AUTONOMY"
-  echo ""
-} > "$LAST_RUN"
-
-ITERATION=0
-EXIT_REASON="max-iterations"
 while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
+  # Checked at the iteration boundary, i.e. before claiming any new work:
+  # a stop file dropped since the last check has the same effect as a first
+  # SIGINT — finish what's already running (nothing is, right here), then exit.
+  # Consumed (removed) here rather than left for the next run to clean up.
+  if [[ -f "$STOP_FILE" ]]; then
+    STOP_REQUESTED=1
+    rm -f "$STOP_FILE"
+  fi
+  if [[ "$STOP_REQUESTED" -eq 1 ]]; then
+    EXIT_REASON="stopped by operator"
+    break
+  fi
+
   ITERATION=$((ITERATION + 1))
   echo ""
   echo "================================================================="
@@ -810,6 +987,25 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   fi
 
   # Binding review gate + merge — deterministic, not skippable by the session.
+  # SIGINT is deliberately left armed (handle_graceful_stop) through this
+  # call, not ignored: an earlier version ignored it here so a foreground
+  # gh/git child of run_external_gates (which shares this script's process
+  # group absent job control) couldn't be torn down mid-flight -- but SIG_IGN
+  # discards a signal outright, so a Ctrl-C during this window vanished with
+  # nothing recorded, and the loop went on to claim a new issue right after,
+  # violating issue #23's AC1. handle_graceful_stop only ever sets a flag (or,
+  # on a second press, escalates to handle_immediate_stop, which kills
+  # $CLAUDE_PGID and requeues) -- it never itself tears anything down, so
+  # arming it costs nothing new. The one real risk is a bare gh/git one-liner
+  # (not a claude session) dying mid-call to the direct kernel SIGINT delivery
+  # every process in this foreground group receives independent of the trap;
+  # that's bounded and self-healing -- e.g. a `gh pr merge` whose HTTP call
+  # completed server-side before the client died leaves the issue
+  # ralph:needs-review with an already-merged PR, exactly the state
+  # reconcile_needs_review_issue (run at the top of every gate pass) detects
+  # and relabels ralph:done. A hung gate/fix `claude` session is still killed
+  # right away by a second Ctrl-C or a SIGTERM, same as anywhere else in the
+  # loop.
   run_external_gates
 
   # Whole-line matches only: a session QUOTING the contract must not stop the
@@ -832,30 +1028,28 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   sleep 2
 done
 
-{
-  echo ""
-  echo "## Final"
-  echo "- Iterations run: $ITERATION"
-  echo "- Exit reason: $EXIT_REASON"
-  echo "- Ended: $(date -Iseconds)"
-  echo ""
-  echo "## Issues touched this session"
-  # Session-scoped, from $TOUCHED_ISSUES_FILE (recorded live as the run acted
-  # on each issue) — NOT a global label sweep. A global sweep would list
-  # every issue ever labeled ralph:* across every past run (ralph:done is
-  # never removed, so it only grows) and silently truncate past --limit.
-  if [[ -s "$TOUCHED_ISSUES_FILE" ]]; then
-    while read -r touched_issue; do
-      [[ -z "$touched_issue" ]] && continue
-      gh issue view "$touched_issue" --json number,title,labels \
-        --jq '"- #\(.number) \(.title) [\(.labels | map(.name) | join(","))]"' 2>/dev/null \
-        || echo "- #$touched_issue (could not fetch current state)"
-    done < <(sort -un "$TOUCHED_ISSUES_FILE")
+# EXIT_REASON is still the "interrupted" sentinel only if the loop above
+# exited via its own condition (ITERATION reached MAX_ITERATIONS) rather than
+# one of the explicit break sites, each of which already set its own reason.
+# That "the loop condition went false" case is ambiguous on its own: a SIGINT
+# landing on the trailing `sleep 2` of the LAST iteration sets STOP_REQUESTED
+# (via handle_graceful_stop) but doesn't break — the loop was going to end
+# anyway — so the operator's stop request must still win the reason over the
+# coincidental max-iterations completion. A stop file dropped during that same
+# last iteration is the same race: the loop-top check that would normally
+# consume it (setting STOP_REQUESTED) never gets another turn once
+# ITERATION == MAX_ITERATIONS, so it's re-checked (and consumed) here too.
+if [[ -f "$STOP_FILE" ]]; then
+  STOP_REQUESTED=1
+  rm -f "$STOP_FILE"
+fi
+if [[ "$EXIT_REASON" == interrupted* ]]; then
+  if [[ "$STOP_REQUESTED" -eq 1 ]]; then
+    EXIT_REASON="stopped by operator"
   else
-    echo "(none)"
+    EXIT_REASON="max-iterations"
   fi
-} >> "$LAST_RUN"
+fi
 
-echo ""
-echo "ralph-gh exited: $EXIT_REASON (after $ITERATION iterations)"
-echo "summary: $LAST_RUN"
+# Final section and exit summary are written by cleanup() (the EXIT trap),
+# so every exit path gets one — see the trap registration near SESSION_ID.

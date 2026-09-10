@@ -139,11 +139,22 @@ The external gate itself (`run_external_gates`) resolves a candidate issue numbe
 
 No signal = fail-soft, next iteration anyway. External gates run **before** the signal is honored, so an open PR always gets its verdict.
 
+## Stopping a run (operator → orchestrator)
+
+The loop is not a daemon (see [What it does NOT do](#what-it-does-not-do)), but killing the terminal it runs in used to be the only way to stop it early — the in-flight session died mid-iteration, `last-run.md` never got its Final section, and the claimed issue sat `ralph:in-progress` until the stale-lease rule released it. Two deliberate stop levels replace that:
+
+| Trigger | Level | Effect |
+|---|---|---|
+| `touch .ralph-gh/STOP`, or a first `Ctrl-C` (SIGINT) | **Graceful** | The in-flight iteration and its external-gate pass finish normally; no new issue is claimed; the loop then exits (`stopped by operator`). |
+| A second `Ctrl-C`, or `SIGTERM` | **Immediate** | The running `claude` session is killed right away; if its issue is still `ralph:in-progress`, it's returned to `ralph:queued` with a lease-release comment; the loop exits (`stopped by operator (immediate)`). |
+
+`last-run.md` gets its `## Final` section on every exit path once a session has started — normal completion, either stop level, or a mid-run error — not just the happy path. (A startup abort — bad config, missing deps, a preflight that never goes green — happens before any session exists and leaves the previous run's `last-run.md` untouched, same as before this feature.) A stop file left over from a previous run is removed at startup, so it can never block a new run.
+
 ## State
 
 - **GitHub**: labels, lease comments, PR comments (`## Gate verdict`) — the source of truth
 - **Git**: commits and merged PRs — the outcome
-- **Local, ephemeral** (`.ralph-gh/`, auto-gitignored): `run.log` (appended across runs) and `last-run.md` (rewritten each run), plus per-iteration input/output/working notes and per-gate input/output — these last session-scoped (`<name>.<session>.*`) so two runs never overwrite each other's artifacts, same convention as `touched-issues.<session>.txt` (the session-scoped record behind `last-run.md`'s "Issues touched this session") — the `.output.txt` files hold only the clean final-result text; sibling `.raw.json`/`.stderr.log` files carry the full CLI response and stderr for debugging
+- **Local, ephemeral** (`.ralph-gh/`, auto-gitignored): `run.log` (appended across runs), `last-run.md` (rewritten each run) and `STOP` (a one-shot stop-request file, `touch`-able from another terminal, removed at startup and once consumed), plus per-iteration input/output/working notes and per-gate input/output — these last session-scoped (`<name>.<session>.*`) so two runs never overwrite each other's artifacts, same convention as `touched-issues.<session>.txt` (the session-scoped record behind `last-run.md`'s "Issues touched this session") — the `.output.txt` files hold only the clean final-result text; sibling `.raw.json`/`.stderr.log` files carry the full CLI response and stderr for debugging
 
 ## Recommended companions
 
