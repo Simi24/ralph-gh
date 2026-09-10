@@ -295,11 +295,23 @@ CLAUDE_PGID=""
 # it and risk a second, redundant claim on an issue that's already in flight.
 requeue_current_issue() {
   local br issue labels
-  br=$(git -C "$REPO_ROOT" branch --show-current 2>/dev/null) || return 0
-  [[ "$br" =~ issue-([0-9]+) ]] || return 0
+  br=$(git -C "$REPO_ROOT" branch --show-current 2>/dev/null) || {
+    echo "[stop] could not determine the checked-out branch — nothing to requeue" | tee -a "$LOG_FILE"
+    return 0
+  }
+  [[ "$br" =~ issue-([0-9]+) ]] || {
+    echo "[stop] branch '$br' carries no issue-N — nothing to requeue" | tee -a "$LOG_FILE"
+    return 0
+  }
   issue="${BASH_REMATCH[1]}"
-  labels=$(gh issue view "$issue" --json labels --jq '[.labels[].name]|join(",")' 2>/dev/null) || return 0
-  [[ "$labels" == *"ralph:in-progress"* ]] || return 0
+  labels=$(gh issue view "$issue" --json labels --jq '[.labels[].name]|join(",")' 2>/dev/null) || {
+    echo "[stop] could not fetch issue #$issue's labels — leaving it untouched (fail closed)" | tee -a "$LOG_FILE"
+    return 0
+  }
+  [[ "$labels" == *"ralph:in-progress"* ]] || {
+    echo "[stop] issue #$issue is not ralph:in-progress (already ${labels:-unlabeled}) — nothing to requeue" | tee -a "$LOG_FILE"
+    return 0
+  }
   gh issue edit "$issue" --remove-label "ralph:in-progress" --add-label "ralph:queued" >/dev/null 2>&1 || true
   gh issue comment "$issue" --body "🤖 ralph-gh lease released @ $(date -Iseconds) — session $SESSION_ID stopped by operator (immediate)" >/dev/null 2>&1 || true
   track_issue "$issue"
@@ -307,6 +319,13 @@ requeue_current_issue() {
 }
 
 handle_immediate_stop() {
+  # Bash blocks a signal from re-entering the handler that's already running
+  # for IT, but INT and TERM are different traps: a Ctrl-C landing here while
+  # a TERM-triggered run is mid-flight would otherwise re-enter via
+  # handle_graceful_stop (still armed for INT) and fire a second requeue +
+  # duplicate lease-release comment. Disarmed for the rest of this handler's
+  # life (it always ends in `exit`, so nothing re-arms them).
+  trap '' INT TERM
   echo "" | tee -a "$LOG_FILE"
   echo "[stop] immediate stop requested — killing the in-flight session and requeuing its issue" | tee -a "$LOG_FILE"
   # label_watcher polls every 45s and, on its own tick, auto-claims any
@@ -361,8 +380,12 @@ cleanup() {
 
   # A signal landing mid-cleanup must not re-enter handle_immediate_stop
   # (which would call `exit` again) and truncate the Final section below —
-  # cleanup runs to completion once it starts, uninterrupted.
-  trap '' INT TERM
+  # cleanup runs to completion once it starts, uninterrupted. HUP is included
+  # too: it's armed for the whole script's life (a dropped terminal/ssh
+  # session), and left unblocked here it would fire mid-write of the
+  # `## Final` section below and truncate it — the exact failure this trap
+  # exists to prevent for INT/TERM.
+  trap '' INT TERM HUP
   [[ -n "$WATCHER_PID" ]] && kill "$WATCHER_PID" 2>/dev/null || true
   if [[ -n "$CLAUDE_PGID" ]]; then
     kill -TERM -"$CLAUDE_PGID" 2>/dev/null || true
@@ -988,7 +1011,14 @@ done
 # landing on the trailing `sleep 2` of the LAST iteration sets STOP_REQUESTED
 # (via handle_graceful_stop) but doesn't break — the loop was going to end
 # anyway — so the operator's stop request must still win the reason over the
-# coincidental max-iterations completion.
+# coincidental max-iterations completion. A stop file dropped during that same
+# last iteration is the same race: the loop-top check that would normally
+# consume it (setting STOP_REQUESTED) never gets another turn once
+# ITERATION == MAX_ITERATIONS, so it's re-checked (and consumed) here too.
+if [[ -f "$STOP_FILE" ]]; then
+  STOP_REQUESTED=1
+  rm -f "$STOP_FILE"
+fi
 if [[ "$EXIT_REASON" == interrupted* ]]; then
   if [[ "$STOP_REQUESTED" -eq 1 ]]; then
     EXIT_REASON="stopped by operator"
