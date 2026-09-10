@@ -120,11 +120,6 @@ LAST_RUN="$STATE_DIR/last-run.md"
 STOP_FILE="$STATE_DIR/STOP"
 mkdir -p "$STATE_DIR"
 
-# A stop file is a one-shot request scoped to the run that consumes it: one
-# left behind by a prior run (crashed before reaching the check, or never
-# cleaned up) must never block a new run from starting.
-rm -f "$STOP_FILE"
-
 # Keep runtime state out of git via .git/info/exclude (local-only, so this
 # never dirties the working tree the way editing a tracked .gitignore would)
 if ! grep -qxF '.ralph-gh/' "$REPO_ROOT/.git/info/exclude" 2>/dev/null; then
@@ -225,6 +220,15 @@ if [[ -n "$RALPH_PREFLIGHT_HEALTH_URL" ]] && ! wait_for_preflight_health; then
   echo "preflight health check never went green: $RALPH_PREFLIGHT_HEALTH_URL (gave up after ${RALPH_PREFLIGHT_HEALTH_RETRIES} attempts; $reason). aborting." >&2
   exit 1
 fi
+
+# A stop file is a one-shot request scoped to the run that consumes it: one
+# left behind by a prior run (crashed before reaching the check, or never
+# cleaned up) must never block a new run from starting. Consumed here — past
+# every startup abort above (dirty tree, wrong branch, fetch failure,
+# preflight) — so a second, failed launch can never disarm a stop request a
+# still-running instance is waiting on: if it ran before those aborts, the
+# failed launch would delete the file out from under the live run.
+rm -f "$STOP_FILE"
 
 SESSION_ID="ralph-$(date +%s)"
 
@@ -335,6 +339,19 @@ handle_graceful_stop() {
 }
 
 cleanup() {
+  # Captured before anything else touches $? (every command below would
+  # otherwise clobber it). "max-iterations" and "unknown" are the two values
+  # EXIT_REASON can hold *before* one of the loop's own break/exit sites sets
+  # it explicitly (see their assignments above) — i.e. they're optimistic
+  # defaults armed ahead of time, not evidence the run actually got there.
+  # A nonzero $? landing on one of them means the shell exited some OTHER
+  # way — an unbound-variable abort under `set -u`, a signal with no trap of
+  # its own — so the default is a lie and gets replaced with the truth.
+  local rc=$?
+  if [[ "$rc" -ne 0 && ( "$EXIT_REASON" == "max-iterations" || "$EXIT_REASON" == "unknown" ) ]]; then
+    EXIT_REASON="error (exit $rc)"
+  fi
+
   # A signal landing mid-cleanup must not re-enter handle_immediate_stop
   # (which would call `exit` again) and truncate the Final section below —
   # cleanup runs to completion once it starts, uninterrupted.
@@ -378,6 +395,10 @@ cleanup() {
 }
 trap handle_graceful_stop INT
 trap handle_immediate_stop TERM
+# A dropped terminal/ssh session sends SIGHUP, and bash runs the EXIT trap
+# for it with $? already reset to 0 — cleanup()'s rc-based check can't see
+# it, so the exit reason is set directly, here, before that trap ever runs.
+trap 'EXIT_REASON="killed (SIGHUP)"; exit 129' HUP
 trap cleanup EXIT
 
 # --- label watcher -----------------------------------------------------------
