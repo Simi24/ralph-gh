@@ -301,6 +301,17 @@ requeue_current_issue() {
 handle_immediate_stop() {
   echo "" | tee -a "$LOG_FILE"
   echo "[stop] immediate stop requested — killing the in-flight session and requeuing its issue" | tee -a "$LOG_FILE"
+  # label_watcher polls every 45s and, on its own tick, auto-claims any
+  # branch-matching issue that's still ralph:queued. Stop it FIRST: otherwise
+  # a tick landing between requeue_current_issue's label edit and its comment
+  # below would relabel the issue straight back to ralph:in-progress with a
+  # fabricated "lease acquired" comment, undoing the requeue this handler
+  # exists to perform.
+  if [[ -n "$WATCHER_PID" ]]; then
+    kill "$WATCHER_PID" 2>/dev/null || true
+    wait "$WATCHER_PID" 2>/dev/null || true
+    WATCHER_PID=""
+  fi
   if [[ -n "$CLAUDE_PGID" ]]; then
     kill -TERM -"$CLAUDE_PGID" 2>/dev/null || true
     sleep 1
@@ -324,6 +335,10 @@ handle_graceful_stop() {
 }
 
 cleanup() {
+  # A signal landing mid-cleanup must not re-enter handle_immediate_stop
+  # (which would call `exit` again) and truncate the Final section below —
+  # cleanup runs to completion once it starts, uninterrupted.
+  trap '' INT TERM
   [[ -n "$WATCHER_PID" ]] && kill "$WATCHER_PID" 2>/dev/null || true
   if [[ -n "$CLAUDE_PGID" ]]; then
     kill -TERM -"$CLAUDE_PGID" 2>/dev/null || true
@@ -822,7 +837,11 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   # Checked at the iteration boundary, i.e. before claiming any new work:
   # a stop file dropped since the last check has the same effect as a first
   # SIGINT — finish what's already running (nothing is, right here), then exit.
-  [[ -f "$STOP_FILE" ]] && STOP_REQUESTED=1
+  # Consumed (removed) here rather than left for the next run to clean up.
+  if [[ -f "$STOP_FILE" ]]; then
+    STOP_REQUESTED=1
+    rm -f "$STOP_FILE"
+  fi
   if [[ "$STOP_REQUESTED" -eq 1 ]]; then
     EXIT_REASON="stopped by operator"
     break
