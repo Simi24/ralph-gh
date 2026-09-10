@@ -380,7 +380,7 @@ requeue_current_issue() {
 # has `.is_error:false` and never reaches the text match below, regardless
 # of what it says.
 #
-# The pattern is taken from
+# The main pattern is taken from
 # https://code.claude.com/docs/en/errors#youve-hit-your-session-limit ("You've
 # hit your session/weekly/Opus/... limit") as of the CLI version this was
 # written against. Anthropic does not document this as a stable API and can
@@ -391,13 +391,18 @@ requeue_current_issue() {
 # the installed CLI (`session`, `weekly`, `Opus`, `Sonnet`, `Fable 5`, `usage
 # credit`, ...) AND the bare `You've hit your limit` variant (no quota word,
 # used on the personal-overage path) -- capped at 40 chars and excluding
-# `.`/`"` so it can't run on past the sentence it belongs to.
+# `.`/`"` so it can't run on past the sentence it belongs to. Two more exact
+# phrases cover the usage-credits-exhausted variant, which is worded
+# differently (no "hit your ... limit" at all) but is the same kind of
+# transient, reset-on-its-own condition -- unlike a sibling wording for a
+# permanently-disabled seat/entitlement, which is deliberately NOT matched
+# here: retrying that one would just spin forever.
 detect_usage_limit() {
   local raw_json="$1" err_file="$2" is_error text
   is_error="$(jq -r '.is_error // false' "$raw_json" 2>/dev/null)"
   [[ "$is_error" == "true" ]] || return 1
   text="$(jq -r '.errors[]? // empty, .result? // empty' "$raw_json" 2>/dev/null; cat "$err_file" 2>/dev/null)"
-  grep -qE "You've hit your[^.\"]{0,40} limit" <<< "$text" || return 1
+  grep -qE "(You've hit your[^.\"]{0,40} limit|You're out of usage credits|Your org is out of usage)" <<< "$text" || return 1
   # -i: the reset clause is prose, and sentence-initial/paraphrased
   # capitalization ("Resets at 3pm.") is as likely as lowercase -- this only
   # affects a human-readable log/comment string, never control flow. Capped
@@ -1104,17 +1109,22 @@ iter_promise_exit_reason() {
 
 # What the main loop does after a usage-limit hit, in one place for both the
 # iteration-session and the gate/fix-session call sites. Returns 0 when the
-# loop may go around again (RALPH_WAIT_FOR_RESET=1: bounded sleep, then back
-# to the base branch), non-zero when it must stop -- with EXIT_REASON already
-# set, either to the usage limit itself or to the dirty tree found on the way
-# out. Call sites are `usage_limit_resume_or_stop || break` + `continue`.
+# loop may go around again (RALPH_WAIT_FOR_RESET=1: back to the base branch,
+# then a bounded sleep), non-zero when it must stop -- with EXIT_REASON
+# already set, either to the usage limit itself or to the dirty tree found on
+# the way out. Call sites are `usage_limit_resume_or_stop || break` +
+# `continue`. Tree reset runs BEFORE the sleep, not after: a session that died
+# mid-work is already dirty the moment it exits, not partway through the
+# wait, so checking first means a run that's going to abort on a dirty tree
+# does so immediately instead of only after burning the full
+# RALPH_USAGE_WAIT_SECONDS ceiling first.
 usage_limit_resume_or_stop() {
   if [[ "$RALPH_WAIT_FOR_RESET" -ne 1 ]]; then
     EXIT_REASON="usage limit — ${USAGE_LIMIT_RESET_DESC}"
     return 1
   fi
+  reset_tree_before_next_iteration || return 1
   wait_for_usage_limit
-  reset_tree_before_next_iteration
 }
 
 while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
