@@ -37,3 +37,13 @@ Forward whatever the user passed. Common forms:
 
 - If the user runs `/ralph-gh` and no issue has `ralph:queued`, the first iteration will emit `QUEUE_EMPTY` immediately. Warn them and suggest labeling issues first.
 - If the working tree isn't clean, the script refuses to start. Surface the git status to the user.
+
+## Stopping a run
+
+The orchestrator runs as a foreground `bash` process inside this session's Bash tool call, so it has **no controlling terminal** — `Ctrl-C` (SIGINT) never reaches it here. That leaves the stop file as the only lever available in this mode:
+
+```bash
+touch .ralph-gh/STOP
+```
+
+This requests a **graceful** stop: the in-flight iteration and its external-gate pass finish normally, no new issue is claimed, and the loop exits (`stopped by operator`) at the next iteration boundary. There is no way to request an **immediate** stop (the second-SIGINT / SIGTERM level) from inside this session — that requires signaling the process directly from a real shell (e.g. `kill -TERM <pid>` from another terminal). See `~/.claude/ralph-gh/README.md`'s "Stopping a run" section for both levels.
