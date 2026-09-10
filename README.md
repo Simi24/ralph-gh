@@ -74,6 +74,7 @@ Fill in:
 - `RALPH_BRANCH_PREFIX`, `RALPH_DEFAULT_BASE_BRANCH` — if your conventions differ
 - `RALPH_GATE_FIX_ROUNDS` — external-gate fix rounds before giving up (default 2)
 - `RALPH_SESSION_TIMEOUT` — seconds before a hung session is killed (default 7200)
+- `RALPH_WAIT_FOR_RESET`, `RALPH_USAGE_WAIT_SECONDS` — usage-limit behavior, see [Usage-limit awareness](#usage-limit-awareness) (defaults: exit on a hit, no wait)
 - `export ANTHROPIC_MODEL=...` — model for iteration sessions (gates stay on Opus regardless)
 
 Then label your backlog:
@@ -123,6 +124,8 @@ tmux new -s ralph 'cd /path/to/repo && caffeinate -dims ralph-gh --max-iteration
 | `ralph:failed:systemic` | Tooling/infra failure → loop stops |
 | `ralph:failed:issue` | Per-issue failure (including exhausted gate-fix rounds) → loop continues, PR left open but never re-processed |
 
+Neither `ralph:failed:*` label is ever applied for a session that died because the *account* hit a usage limit, not because of anything wrong with the work — see [Usage-limit awareness](#usage-limit-awareness).
+
 Reconciliation runs at the start of every gate pass (`reconcile_board_states`, the first step inside `run_external_gates`): it resolves the PR linked to an issue via GitHub's own closing-keyword linkage (not branch-name matching, so it still works even if the PR's branch never followed the `issue-N` convention), and fails closed — a `gh`/`jq` error is logged (`[reconcile]` prefix in `run.log`) and the issue is left untouched rather than guessing a transition.
 
 The external gate itself (`run_external_gates`) resolves a candidate issue number from the PR's branch name or, failing that, its body's closing keyword (`Closes #N` and friends), then — when possible — confirms that candidate against the same closing-keyword linkage before treating the PR as that issue's PR. GitHub only populates this linkage against a PR whose base is the repo's *actual* default branch. If your `RALPH_DEFAULT_BASE_BRANCH` is a supported override that differs from it (e.g. developing off `develop` while GitHub's default is `main`), linkage can never exist for any PR; the gate detects that once per pass, logs `[gate] closing-keyword linkage unavailable ...`, and falls back to the unconfirmed candidate, relying on the `ralph:needs-review` label check as the eligibility boundary instead.
@@ -149,6 +152,19 @@ The loop is not a daemon (see [What it does NOT do](#what-it-does-not-do)), but 
 | A second `Ctrl-C`, or `SIGTERM` | **Immediate** | The running `claude` session is killed right away; if its issue is still `ralph:in-progress`, it's returned to `ralph:queued` with a lease-release comment; the loop exits (`stopped by operator (immediate)`). |
 
 `last-run.md` gets its `## Final` section on every exit path once a session has started — normal completion, either stop level, or a mid-run error — not just the happy path. (A startup abort — bad config, missing deps, a preflight that never goes green — happens before any session exists and leaves the previous run's `last-run.md` untouched, same as before this feature.) A stop file left over from a previous run is removed at startup, so it can never block a new run.
+
+## Usage-limit awareness
+
+Claude.ai subscription plans (Pro, Max, Team, Enterprise) expose no API to check remaining quota in the rolling session/weekly window, so ralph-gh cannot predict whether a run will finish before hitting one — any "will this fit in my quota?" check would be a guess dressed up as a check, and this project doesn't promise what it can't enforce. What it *can* do is react once a session has already reported hitting the wall, instead of misfiling a perfectly good issue as failed because the account ran dry mid-session.
+
+`detect_usage_limit` (one function, `ralph-gh.sh`) checks an iteration/gate/fix session's raw JSON result and stderr for the CLI's documented usage-limit wording (`You've hit your session limit`, `...weekly limit`, `...Opus limit`, and the interactive wait-line's `Usage limit reached`/`Usage limit reset`). These strings are **not a stable API** — Anthropic can reword them without notice — so the match is deliberately narrow (exact literal phrases, not a loose "usage limit" substring) and best-effort: anything that doesn't match falls straight through to today's existing "no parsable result" handling, never a guess.
+
+On a match:
+
+- Neither `ralph:failed:systemic` nor `ralph:failed:issue` is ever applied.
+- An iteration-session hit requeues the claimed issue to `ralph:queued` (the same lease-release path used by an immediate stop, see above). A gate/fix-session hit leaves the PR's issue exactly `ralph:needs-review` — an open PR already exists, so it's simply re-gated on a later pass instead of being requeued into a state that implies no PR exists yet.
+- **Default** (`RALPH_WAIT_FOR_RESET=0`): the run exits cleanly, and `last-run.md`'s exit reason records the best-effort reset description ralph-gh could parse out of the session's own output (`usage limit — resets at <description>`, or `unknown (not stated in session output)` when none was present).
+- **`RALPH_WAIT_FOR_RESET=1`**: instead of exiting, ralph-gh sleeps `RALPH_USAGE_WAIT_SECONDS` (default 1800) and resumes the loop. This is a bounded wait, not a precise sleep-until-reset — the reset time, when a session states one at all, is prose in a locale/format ralph-gh doesn't try to parse into a schedule. If the limit hasn't actually lifted yet, the next attempt hits the same detection and waits again; each round is still bounded by `RALPH_USAGE_WAIT_SECONDS` and by `--max-iterations` overall.
 
 ## State
 
