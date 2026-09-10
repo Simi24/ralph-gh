@@ -398,6 +398,23 @@ confirm_issue_link() {
     <<< "$linked" >/dev/null 2>&1
 }
 
+# Accepts a branch/body-derived candidate issue number for $2 (a PR number).
+# GitHub only populates closing-keyword linkage
+# (closedByPullRequestsReferences) against a repo's actual default branch --
+# a PR opened against any other base (a documented, supported
+# RALPH_DEFAULT_BASE_BRANCH configuration) will NEVER show up there, so
+# confirm_issue_link would fail every candidate, every pass, forever, and
+# nothing would ever gate. $5 = 1 when RALPH_DEFAULT_BASE_BRANCH matches
+# GitHub's own default branch (linkage can exist, so require it via
+# confirm_issue_link); $5 = 0 means linkage cannot exist for this repo, so
+# fall back to the pre-confirmation rule -- accept the candidate as-is and
+# rely on the ralph:needs-review label check that follows as the boundary.
+accept_candidate() {
+  local candidate="$1" pr="$2" owner="$3" repo="$4" linkage_available="$5"
+  [[ "$linkage_available" -eq 1 ]] || return 0
+  confirm_issue_link "$candidate" "$pr" "$owner" "$repo"
+}
+
 reconcile_needs_review_issue() {
   local issue="$1" owner="$2" repo="$3"
   local prs open_count merged_pr closed_pr
@@ -494,6 +511,22 @@ run_external_gates() {
   owner=$(gh repo view --json owner --jq '.owner.login' 2>/dev/null) || { echo "[gate] could not determine repo owner, skipping this pass" | tee -a "$LOG_FILE"; return 0; }
   repo=$(gh repo view --json name --jq '.name' 2>/dev/null) || { echo "[gate] could not determine repo name, skipping this pass" | tee -a "$LOG_FILE"; return 0; }
 
+  # GitHub only links a PR to an issue via closing keywords
+  # (closedByPullRequestsReferences, what confirm_issue_link checks) when the
+  # PR's base is the repo's actual default branch. RALPH_DEFAULT_BASE_BRANCH
+  # is a supported, documented override that can legitimately differ from it
+  # (e.g. a repo developing off "develop") -- in that case the linkage can
+  # never exist, so confirm_issue_link would reject every candidate, every
+  # pass, forever, silently stalling the whole gate. Detect that mismatch
+  # once per pass and fall back to the pre-confirmation rule via
+  # accept_candidate instead.
+  local default_branch linkage_available=1
+  default_branch=$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name // ""' 2>/dev/null) || default_branch=""
+  if [[ -z "$default_branch" || "$default_branch" != "$RALPH_DEFAULT_BASE_BRANCH" ]]; then
+    linkage_available=0
+    echo "[gate] closing-keyword linkage unavailable (GitHub default branch is '${default_branch:-unknown}', RALPH_DEFAULT_BASE_BRANCH is '$RALPH_DEFAULT_BASE_BRANCH') -- falling back to unconfirmed branch/body candidates, gated only by the ralph:needs-review label check" | tee -a "$LOG_FILE"
+  fi
+
   local pr_list
   # Same-repo PRs only: a same-repo head branch requires push access, which is
   # the trust boundary. Fork PRs must NEVER enter this pipeline: gating or
@@ -501,11 +534,11 @@ run_external_gates() {
   # The branch prefix is deliberately NOT an eligibility filter here: it's a
   # convention for sessions, not a security boundary. The real boundaries are
   # isCrossRepository == false (checked here) and the linked issue's
-  # ralph:needs-review label PLUS GitHub's own closing-keyword linkage
-  # (confirmed below via fetch_closing_prs) -- a PR on a differently-prefixed
-  # branch (misconfigured session, or a human's) must still reach the gate,
-  # but a PR that merely mentions an issue number must NOT be treated as
-  # that issue's PR.
+  # ralph:needs-review label PLUS, when linkage_available, GitHub's own
+  # closing-keyword linkage (confirmed below via fetch_closing_prs) -- a PR
+  # on a differently-prefixed branch (misconfigured session, or a human's)
+  # must still reach the gate, but a PR that merely mentions an issue number
+  # must NOT be treated as that issue's PR when confirmation is possible.
   pr_list=$(gh pr list --state open --limit 100 --json number,headRefName,isCrossRepository \
     --jq '.[] | select(.isCrossRepository == false) | "\(.number) \(.headRefName)"' 2>/dev/null) || { echo "[gate] could not list open PRs, skipping this pass" | tee -a "$LOG_FILE"; return 0; }
   [[ -z "$pr_list" ]] && return 0
@@ -513,15 +546,18 @@ run_external_gates() {
   local pr branch body issue labels can_merge withheld_reason round verdict changed_files candidate
   while read -r pr branch; do
     issue=""
-    # A branch/body pattern only ever nominates a *candidate* issue; it must
-    # be confirmed against GitHub's actual closing-keyword linkage
-    # (confirm_issue_link, OPEN + same-repo only) before the PR is treated as
-    # that issue's PR. Without this, a PR that merely mentions "closed #N" in
-    # prose (or lands on a branch that happens to contain "issue-N") could be
-    # gated, fixed, and even merged as if it were issue #N's PR.
+    # A branch/body pattern only ever nominates a *candidate* issue; when
+    # linkage_available, accept_candidate confirms it against GitHub's actual
+    # closing-keyword linkage (OPEN + same-repo only) before the PR is
+    # treated as that issue's PR -- otherwise a PR that merely mentions
+    # "closed #N" in prose (or lands on a branch that happens to contain
+    # "issue-N") could be gated, fixed, and even merged as if it were issue
+    # #N's PR. When linkage is NOT available (RALPH_DEFAULT_BASE_BRANCH !=
+    # GitHub's default branch), accept_candidate accepts the candidate
+    # as-is, and the ralph:needs-review label check below is the boundary.
     if [[ "$branch" =~ issue-([0-9]+) ]]; then
       candidate="${BASH_REMATCH[1]}"
-      confirm_issue_link "$candidate" "$pr" "$owner" "$repo" && issue="$candidate"
+      accept_candidate "$candidate" "$pr" "$owner" "$repo" "$linkage_available" && issue="$candidate"
     fi
     if [[ -z "$issue" ]]; then
       # The branch name carried no issue number, or its candidate didn't
@@ -531,11 +567,15 @@ run_external_gates() {
       body=$(gh pr view "$pr" --json body --jq '.body // ""' 2>/dev/null) || body=""
       if [[ "$body" =~ ([Cc]lose|[Cc]loses|[Cc]losed|[Ff]ix|[Ff]ixes|[Ff]ixed|[Rr]esolve|[Rr]esolves|[Rr]esolved)[[:space:]]+#([0-9]+) ]]; then
         candidate="${BASH_REMATCH[2]}"
-        confirm_issue_link "$candidate" "$pr" "$owner" "$repo" && issue="$candidate"
+        accept_candidate "$candidate" "$pr" "$owner" "$repo" "$linkage_available" && issue="$candidate"
       fi
     fi
     if [[ -z "$issue" ]]; then
-      echo "[gate] PR #$pr skipped (no branch/body issue-number candidate is confirmed by GitHub's closing-keyword linkage)" | tee -a "$LOG_FILE"
+      if [[ "$linkage_available" -eq 1 ]]; then
+        echo "[gate] PR #$pr skipped (no branch/body issue-number candidate is confirmed by GitHub's closing-keyword linkage)" | tee -a "$LOG_FILE"
+      else
+        echo "[gate] PR #$pr skipped (no branch/body issue-number candidate found)" | tee -a "$LOG_FILE"
+      fi
       continue
     fi
 

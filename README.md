@@ -125,6 +125,8 @@ tmux new -s ralph 'cd /path/to/repo && caffeinate -dims ralph-gh --max-iteration
 
 Reconciliation runs at the start of every gate pass (`reconcile_board_states`, the first step inside `run_external_gates`): it resolves the PR linked to an issue via GitHub's own closing-keyword linkage (not branch-name matching, so it still works even if the PR's branch never followed the `issue-N` convention), and fails closed — a `gh`/`jq` error is logged (`[reconcile]` prefix in `run.log`) and the issue is left untouched rather than guessing a transition.
 
+The external gate itself (`run_external_gates`) resolves a candidate issue number from the PR's branch name or, failing that, its body's closing keyword (`Closes #N` and friends), then — when possible — confirms that candidate against the same closing-keyword linkage before treating the PR as that issue's PR. GitHub only populates this linkage against a PR whose base is the repo's *actual* default branch. If your `RALPH_DEFAULT_BASE_BRANCH` is a supported override that differs from it (e.g. developing off `develop` while GitHub's default is `main`), linkage can never exist for any PR; the gate detects that once per pass, logs `[gate] closing-keyword linkage unavailable ...`, and falls back to the unconfirmed candidate, relying on the `ralph:needs-review` label check as the eligibility boundary instead.
+
 ## Stop signals (session → orchestrator)
 
 | Signal | Action |
