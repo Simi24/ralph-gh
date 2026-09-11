@@ -178,6 +178,10 @@ On a match:
 
 Every narrative line the orchestrator writes to `run.log` goes through one timestamped (ISO 8601) `log()` helper — a handful of sites that redirect a subprocess's raw stderr straight into the file for debugging (a failed preflight command, a `gh` call's own error output) are captured as-is, unstamped, same as before this feature. `last-run.md` breaks each iteration's wall-clock down into session / gate-round / fix-round durations, so "how long has this phase been going" is a read, not archaeology.
 
+## Releases
+
+Tags and changelogs are automated with [release-please](https://github.com/googleapis/release-please): every push to `main` updates a standing release PR built from the conventional-commit history, and merging it cuts a GitHub release, bumps `version.txt`, and appends to `CHANGELOG.md` — nothing to run by hand. `ralph-gh.sh` reads `version.txt` next to itself (best-effort — a pre-release clone that has never had a release-please PR merged simply omits the line) and prints it in the run banner and in `last-run.md`, so a run's log always says which cut of the orchestrator produced it.
+
 ## Recommended companions
 
 The loop shines with these (not bundled — install them yourself, from [Matt Pocock's skills](https://github.com/mattpocock/skills)):

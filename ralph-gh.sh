@@ -267,6 +267,14 @@ rm -f "$STOP_FILE"
 
 SESSION_ID="ralph-$(date +%s)"
 
+# Best-effort: version.txt only exists once release-please has cut a first
+# release (see .github/workflows/release-please.yml). Its absence is the
+# normal pre-release state, not an error — the banner just omits the line.
+RALPH_VERSION=""
+if [[ -f "$SCRIPT_DIR/version.txt" ]]; then
+  RALPH_VERSION="$(<"$SCRIPT_DIR/version.txt")"
+fi
+
 # Predeclared before the EXIT trap is registered (below) so cleanup() can
 # always reference them safely under `set -u`, however early the trap fires.
 # "interrupted (no exit reason recorded)" is a sentinel, not a conclusion: it
@@ -284,6 +292,7 @@ STOP_REQUESTED=0
   echo ""
   echo "================================================================="
   echo "ralph-gh session: $SESSION_ID"
+  [[ -n "$RALPH_VERSION" ]] && echo "version: $RALPH_VERSION"
   echo "started: $(date -Iseconds)"
   echo "autonomy=$AUTONOMY  max_iterations=$MAX_ITERATIONS"
   echo "repo=$REPO_ROOT"
@@ -292,6 +301,7 @@ STOP_REQUESTED=0
 
 {
   echo "# ralph-gh run — $SESSION_ID"
+  [[ -n "$RALPH_VERSION" ]] && echo "Version: $RALPH_VERSION"
   echo "Started: $(date -Iseconds)"
   echo "Repo: $REPO_ROOT"
   echo "Autonomy: $AUTONOMY"
