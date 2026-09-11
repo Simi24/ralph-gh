@@ -37,6 +37,17 @@ for f in "$SRC"/agents/*.md; do
   cp "$f" "$AGENTS/"
 done
 
+# Stamp which clone this install came from and at what commit, so a stale
+# installed copy can warn about itself at startup (see ralph-gh.sh). Best
+# effort: SRC may not be a git checkout at all (e.g. a downloaded tarball),
+# in which case the SHA is recorded as "unknown" and the drift check fails
+# open. Refreshed on every re-run, so reinstalling always re-syncs it.
+SRC_SHA="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || echo unknown)"
+{
+  echo "source_path=$SRC"
+  echo "source_sha=$SRC_SHA"
+} > "$DEST/.installed"
+
 SKILLS="$HOME/.claude/skills"
 mkdir -p "$SKILLS/ralph-gh"
 cp "$SRC/skills/ralph-gh/SKILL.md" "$SKILLS/ralph-gh/SKILL.md"
