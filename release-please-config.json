@@ -3,8 +3,7 @@
   "release-type": "simple",
   "packages": {
     ".": {
-      "package-name": "ralph-gh",
-      "release-as": "1.0.0"
+      "package-name": "ralph-gh"
     }
   }
 }

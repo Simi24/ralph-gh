@@ -9,6 +9,12 @@ permissions:
   contents: write
   pull-requests: write
 
+# The loop's own merges can push to main in quick succession; without this,
+# two concurrent runs could both act on the same standing release PR.
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
 jobs:
   release-please:
     runs-on: ubuntu-latest

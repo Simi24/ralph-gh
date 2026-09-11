@@ -19,9 +19,13 @@ done
 chmod +x "$DEST/ralph-gh.sh"
 
 # version.txt only exists once release-please has cut a first release —
-# best-effort, not an install failure if this is a pre-release clone.
+# best-effort, not an install failure if this is a pre-release clone. Also
+# clear a stale installed copy so a reinstall from a pre-release clone can
+# never leave the banner reporting a version this clone doesn't have.
 if [[ -f "$SRC/version.txt" ]]; then
   cp "$SRC/version.txt" "$DEST/version.txt"
+else
+  rm -f "$DEST/version.txt"
 fi
 
 for f in "$SRC"/agents/*.md; do
