@@ -18,6 +18,12 @@ for f in ralph-gh.sh CLAUDE.md example.ralph-gh.config README.md; do
 done
 chmod +x "$DEST/ralph-gh.sh"
 
+# version.txt only exists once release-please has cut a first release —
+# best-effort, not an install failure if this is a pre-release clone.
+if [[ -f "$SRC/version.txt" ]]; then
+  cp "$SRC/version.txt" "$DEST/version.txt"
+fi
+
 for f in "$SRC"/agents/*.md; do
   base="$(basename "$f")"
   if [[ -f "$AGENTS/$base" ]] && ! cmp -s "$f" "$AGENTS/$base"; then
