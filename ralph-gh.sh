@@ -275,6 +275,25 @@ if [[ -f "$SCRIPT_DIR/version.txt" ]]; then
   RALPH_VERSION="$(<"$SCRIPT_DIR/version.txt")"
 fi
 
+# Drift check: warn (never block) when the installed copy (this script, under
+# $SCRIPT_DIR) is running behind the clone install.sh was last run from — the
+# exact failure that cost a full run on 2026-09-10 (fixes merged in main, loop
+# still executing the pre-fix installed copy). Advisory only: fails open on
+# any missing file, missing clone, or non-git source — this is a nudge to
+# re-run install.sh, not an enforcement mechanism, and it never touches the
+# network (both SHAs are read from local git metadata only).
+DRIFT_WARNING=""
+if [[ -f "$SCRIPT_DIR/.installed" ]]; then
+  INSTALLED_SRC_PATH="$(grep -m1 '^source_path=' "$SCRIPT_DIR/.installed" 2>/dev/null | cut -d= -f2-)"
+  INSTALLED_SRC_SHA="$(grep -m1 '^source_sha=' "$SCRIPT_DIR/.installed" 2>/dev/null | cut -d= -f2-)"
+  if [[ -n "$INSTALLED_SRC_PATH" && -n "$INSTALLED_SRC_SHA" && "$INSTALLED_SRC_SHA" != "unknown" && -d "$INSTALLED_SRC_PATH" ]]; then
+    CURRENT_SRC_SHA="$(git -C "$INSTALLED_SRC_PATH" rev-parse HEAD 2>/dev/null || echo "")"
+    if [[ -n "$CURRENT_SRC_SHA" && "$CURRENT_SRC_SHA" != "$INSTALLED_SRC_SHA" ]]; then
+      DRIFT_WARNING="installed copy is behind your clone (${INSTALLED_SRC_SHA:0:7} -> ${CURRENT_SRC_SHA:0:7}) — run install.sh"
+    fi
+  fi
+fi
+
 # Predeclared before the EXIT trap is registered (below) so cleanup() can
 # always reference them safely under `set -u`, however early the trap fires.
 # "interrupted (no exit reason recorded)" is a sentinel, not a conclusion: it
@@ -296,6 +315,7 @@ STOP_REQUESTED=0
   echo "started: $(date -Iseconds)"
   echo "autonomy=$AUTONOMY  max_iterations=$MAX_ITERATIONS"
   echo "repo=$REPO_ROOT"
+  [[ -n "$DRIFT_WARNING" ]] && echo "WARNING: $DRIFT_WARNING"
   echo "================================================================="
 } | log
 

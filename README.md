@@ -58,6 +58,19 @@ The installer also registers a `/ralph-gh` skill, so inside an interactive Claud
 
 Requires: `claude` (Claude Code CLI), `gh` (authenticated as a collaborator with **push** and **triage** permission — or higher, e.g. maintain/admin — on the repo, so it can push branches, merge PRs, and create/edit `ralph:*` labels), `jq`, `curl`, bash 3.2+. The orchestrator checks this for real at startup (`gh api repos/{owner}/{repo} --jq .permissions`) and exits before spawning any session if either is missing.
 
+## Updating
+
+The copies under `~/.claude/` (`ralph-gh.sh`, the agents, the skill) are a **deployment** of this repo, not a separate thing — a `git pull` alone changes nothing your loop actually runs. Redeploy after every pull:
+
+```bash
+git pull
+./install.sh
+```
+
+`install.sh` overwrites the installed copy and, if your local edits differ from what's already installed, backs the old version up as `*.bak` first (`ralph-gh.sh.bak`, `CLAUDE.md.bak`, etc.) before overwriting it.
+
+Each install also stamps the clone's path and commit SHA into `~/.claude/ralph-gh/.installed`. If you `git pull` and then start a run without reinstalling, the orchestrator notices its installed copy is behind that clone and prints one warning line at startup (`installed copy is behind your clone (<sha> -> <sha>) — run install.sh`) — advisory only, it never blocks the run.
+
 ## Per-repo setup (one time)
 
 ```bash
