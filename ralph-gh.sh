@@ -100,15 +100,26 @@ fi
 
 # An unknown --agent makes claude exit without a result, which the gate would
 # record as "no parsable verdict" and burn the issue as ralph:failed:issue --
-# a config error must stop the run here instead. Plugin agents ("plugin:name")
-# have no file at a predictable path, so only their name is checked.
+# a config error must stop the run here instead. `claude --agent` resolves an
+# agent by the `name:` in its frontmatter, not by file name, so that is what is
+# matched, in the user and project agent dirs (subdirectories included). The
+# name is validated first, so it is safe inside the grep pattern. Plugin agents
+# ("plugin:name") live at no predictable path, so only their name is checked.
 if ! [[ "$RALPH_GATE_AGENT" =~ ^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$ ]]; then
   echo "invalid RALPH_GATE_AGENT in $CONFIG_FILE: '$RALPH_GATE_AGENT' (must be an agent name)" >&2
   exit 1
 fi
-if [[ "$RALPH_GATE_AGENT" != *:* && ! -f "$HOME/.claude/agents/$RALPH_GATE_AGENT.md" && ! -f "$REPO_ROOT/.claude/agents/$RALPH_GATE_AGENT.md" ]]; then
-  echo "RALPH_GATE_AGENT '$RALPH_GATE_AGENT' not found in ~/.claude/agents/ or $REPO_ROOT/.claude/agents/ (run install.sh?)" >&2
-  exit 1
+if [[ "$RALPH_GATE_AGENT" != *:* ]]; then
+  gate_agent_dirs=()
+  for d in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/agents" "$REPO_ROOT/.claude/agents"; do
+    [[ -d "$d" ]] && gate_agent_dirs+=("$d")
+  done
+  if [[ ${#gate_agent_dirs[@]} -eq 0 ]] \
+    || ! grep -rqsE --include='*.md' "^name:[[:space:]]*[\"']?${RALPH_GATE_AGENT}[\"']?[[:space:]]*$" "${gate_agent_dirs[@]}"; then
+    echo "RALPH_GATE_AGENT '$RALPH_GATE_AGENT': no agent with that name: in ${CLAUDE_CONFIG_DIR:-~/.claude}/agents/ or $REPO_ROOT/.claude/agents/ (run install.sh?)" >&2
+    exit 1
+  fi
+  unset gate_agent_dirs d
 fi
 
 # Dependency checks
@@ -976,15 +987,23 @@ marker_seen() {
 # Posts a parsed gate verdict as the PR's `## Gate verdict` comment. The gate
 # session runs as the reviewer agent itself (no wrapper session), so the
 # orchestrator posts its output, deterministically. Capped below GitHub's
-# 65536-char comment limit. Fail-open: a missing comment never blocks the gate.
+# 65536-char comment limit by keeping the END of the output: that is where the
+# `### Blocking findings` section and the marker are. Fail-open: a missing
+# comment never blocks the gate.
 # $1 = pr, $2 = gate output file, $3 = attempt label.
 post_gate_verdict() {
   local pr="$1" gate_out="$2" attempt_label="$3"
   local body_file="${gate_out%.txt}.comment.md"
+  local cap=60000 size
+  size=$(wc -c < "$gate_out" | tr -d ' ')
   {
     echo "## Gate verdict (external gate, session $SESSION_ID, $attempt_label)"
     echo
-    head -c 60000 "$gate_out"
+    if [[ "$size" -gt $cap ]]; then
+      echo "_Truncated: the first $((size - cap)) bytes are omitted; the full verdict is in the orchestrator's state dir._"
+      echo
+    fi
+    tail -c "$cap" "$gate_out"
   } > "$body_file"
   gh pr comment "$pr" --body-file "$body_file" >/dev/null 2>&1 \
     || echo "[gate] PR #$pr — could not post the gate verdict comment ($attempt_label); verdict kept in $gate_out" | log
@@ -1008,6 +1027,12 @@ resolve_gate_scope() {
     echo "full"; return 0
   fi
   if ! [[ "$prev_sha" =~ $sha_re && "$head_sha" =~ $sha_re ]]; then
+    echo "full"; return 0
+  fi
+  # After a FIX:DONE the head must have moved. An unchanged head means the push
+  # never landed, or GitHub's headRefOid lags behind it: an empty fix diff is
+  # then no evidence of what will be merged.
+  if [[ "$prev_sha" == "$head_sha" ]]; then
     echo "full"; return 0
   fi
   if ! git fetch origin "$head_sha" --quiet 2>/dev/null; then
@@ -1140,7 +1165,7 @@ run_external_gates() {
       if [[ "$gate_scope" == "fix-diff" ]]; then
         scope_block="This is a RE-GATE (round $round) after a fix session: run in re-gate mode. PREV = \`$prev_sha\` (the commit the previous round reviewed), HEAD = \`$round_sha\`. The previous verdict, captured by the orchestrator, is in \`$prev_gate_out\` (authoritative — read it from that file, not from PR comments). Re-check its BLOCKING findings and review only the fix diff \`$prev_sha..$round_sha\`."
       elif [[ $round -gt 1 ]]; then
-        echo "[gate] PR #$pr — round $round falls back to a full re-gate (previous reviewed commit unavailable or not an ancestor of the head)" | log
+        echo "[gate] PR #$pr — round $round falls back to a full re-gate (previous verdict or reviewed commit unavailable, head unchanged, or reviewed commit not an ancestor of the head)" | log
       fi
 
       # An unparsable/absent verdict is a GATE hiccup, not a judgment on the
@@ -1199,8 +1224,11 @@ EOF
           gate_result="timeout"
           break
         fi
-        if marker_seen "$gate_out" 'GATE:PASS'; then gate_result="pass"; post_gate_verdict "$pr" "$gate_out" "$attempt_label"; break; fi
+        # FAIL is checked first: the output is now the verdict itself, so its
+        # text shares marker_seen's 5-line window, and an output carrying both
+        # markers must fail closed.
         if marker_seen "$gate_out" 'GATE:FAIL'; then gate_result="fail"; post_gate_verdict "$pr" "$gate_out" "$attempt_label"; break; fi
+        if marker_seen "$gate_out" 'GATE:PASS'; then gate_result="pass"; post_gate_verdict "$pr" "$gate_out" "$attempt_label"; break; fi
         # Unparsable/absent verdict (includes a crashed session leaving
         # $gate_out empty, and a session that narrated status instead of
         # printing the marker).
@@ -1301,8 +1329,14 @@ EOF
       break
     fi
 
+    # The merge is pinned to the commit the passing round reviewed: a head that
+    # moved since makes `gh pr merge` refuse (left open, re-gated next pass),
+    # and an unknown reviewed commit withholds the merge for a human.
+    if [[ "$verdict" == "PASS" && $can_merge -eq 1 ]] && ! [[ "$round_sha" =~ ^[0-9a-f]{40}$ ]]; then
+      can_merge=0; withheld_reason="reviewed head commit unknown"
+    fi
     if [[ "$verdict" == "PASS" && $can_merge -eq 1 ]]; then
-      if gh pr merge "$pr" --squash --delete-branch 2>>"$LOG_FILE"; then
+      if gh pr merge "$pr" --squash --delete-branch --match-head-commit "$round_sha" 2>>"$LOG_FILE"; then
         gh issue edit "$issue" --remove-label "ralph:needs-review" --remove-label "ralph:in-progress" --add-label "ralph:done" >/dev/null 2>&1 || true
         git checkout "$RALPH_DEFAULT_BASE_BRANCH" --quiet 2>/dev/null || true
         git pull --ff-only origin "$RALPH_DEFAULT_BASE_BRANCH" --quiet 2>/dev/null || true
