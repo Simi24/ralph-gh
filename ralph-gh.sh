@@ -114,12 +114,19 @@ if [[ "$RALPH_GATE_AGENT" != *:* ]]; then
   for d in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/agents" "$REPO_ROOT/.claude/agents"; do
     [[ -d "$d" ]] && gate_agent_dirs+=("$d")
   done
-  if [[ ${#gate_agent_dirs[@]} -eq 0 ]] \
-    || ! grep -rqsE --include='*.md' "^name:[[:space:]]*[\"']?${RALPH_GATE_AGENT}[\"']?[[:space:]]*$" "${gate_agent_dirs[@]}"; then
+  # find -L follows symlinks (a dotfiles-managed agents dir or agent file);
+  # `grep -r` does not. The match list is captured rather than piped into
+  # `grep -q`, which under pipefail could fail on find's SIGPIPE.
+  gate_agent_hits=""
+  if [[ ${#gate_agent_dirs[@]} -gt 0 ]]; then
+    gate_agent_hits=$(find -L "${gate_agent_dirs[@]}" -type f -name '*.md' \
+      -exec grep -lE "^name:[[:space:]]*[\"']?${RALPH_GATE_AGENT}[\"']?[[:space:]]*$" {} + 2>/dev/null)
+  fi
+  if [[ -z "$gate_agent_hits" ]]; then
     echo "RALPH_GATE_AGENT '$RALPH_GATE_AGENT': no agent with that name: in ${CLAUDE_CONFIG_DIR:-~/.claude}/agents/ or $REPO_ROOT/.claude/agents/ (run install.sh?)" >&2
     exit 1
   fi
-  unset gate_agent_dirs d
+  unset gate_agent_dirs gate_agent_hits d
 fi
 
 # Dependency checks
