@@ -63,6 +63,7 @@ RALPH_DOC_FILES=()
 RALPH_BRANCH_PREFIX="ralph"
 RALPH_DEFAULT_BASE_BRANCH="main"
 RALPH_GATE_FIX_ROUNDS=2     # external-gate FAIL -> fix session -> re-gate, at most this many times
+RALPH_GATE_AGENT="ralph-gate-reviewer"  # agent the external gate session runs as (claude --agent)
 RALPH_SESSION_TIMEOUT=7200  # seconds before a hung claude session (iteration, gate or fix) is killed
 RALPH_WAIT_FOR_RESET=0      # 1 = on a usage-limit hit, sleep (bounded) and resume instead of exiting (see #24)
 RALPH_USAGE_WAIT_SECONDS=1800  # bounded sleep before resuming when RALPH_WAIT_FOR_RESET=1
@@ -94,6 +95,19 @@ if ! [[ "$RALPH_WAIT_FOR_RESET" =~ ^[01]$ ]]; then
 fi
 if ! [[ "$RALPH_USAGE_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
   echo "invalid RALPH_USAGE_WAIT_SECONDS in $CONFIG_FILE: '$RALPH_USAGE_WAIT_SECONDS' (must be a positive integer)" >&2
+  exit 1
+fi
+
+# An unknown --agent makes claude exit without a result, which the gate would
+# record as "no parsable verdict" and burn the issue as ralph:failed:issue --
+# a config error must stop the run here instead. Plugin agents ("plugin:name")
+# have no file at a predictable path, so only their name is checked.
+if ! [[ "$RALPH_GATE_AGENT" =~ ^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$ ]]; then
+  echo "invalid RALPH_GATE_AGENT in $CONFIG_FILE: '$RALPH_GATE_AGENT' (must be an agent name)" >&2
+  exit 1
+fi
+if [[ "$RALPH_GATE_AGENT" != *:* && ! -f "$HOME/.claude/agents/$RALPH_GATE_AGENT.md" && ! -f "$REPO_ROOT/.claude/agents/$RALPH_GATE_AGENT.md" ]]; then
+  echo "RALPH_GATE_AGENT '$RALPH_GATE_AGENT' not found in ~/.claude/agents/ or $REPO_ROOT/.claude/agents/ (run install.sh?)" >&2
   exit 1
 fi
 
@@ -711,7 +725,8 @@ label_watcher() {
 # authorizes a merge is produced by a session the orchestrator controls,
 # never by the session under review.
 run_claude_step() {
-  # $1 = input file, $2 = output file. Bounded by RALPH_SESSION_TIMEOUT:
+  # $1 = input file, $2 = output file, $3 = optional agent the session runs
+  # as (claude --agent; empty = the default session). Bounded by RALPH_SESSION_TIMEOUT:
   # a hung session must never freeze an unattended run. On timeout the
   # child gets SIGTERM, then a bounded grace period to exit on its own,
   # then SIGKILL — a child that ignores, is slow to handle, or is itself
@@ -726,6 +741,8 @@ run_claude_step() {
   local raw_json="${2%.txt}.raw.json"
   local err_file="${2%.txt}.stderr.log"
   local kill_grace=10  # seconds a SIGTERM'd child gets before SIGKILL
+  local agent_args=()
+  [[ -n "${3:-}" ]] && agent_args=(--agent "$3")
   : > "$2"
   # Published globally (not just local) so callers can run detect_usage_limit
   # against the same files after this returns, on any exit path, without
@@ -750,8 +767,9 @@ run_claude_step() {
   case $- in *m*) monitor_was_on=1 ;; esac
   {
     set -m
+    # ${arr[@]+...}: bash 3.2 treats "${arr[@]}" of an empty array as unbound under set -u.
     claude --dangerously-skip-permissions --print --output-format json \
-      --add-dir "$REPO_ROOT" \
+      --add-dir "$REPO_ROOT" ${agent_args[@]+"${agent_args[@]}"} \
       < "$1" > "$raw_json" 2> "$err_file" &
     local cpid=$! start_ts elapsed
     CLAUDE_PGID="$cpid"  # group == leader pid under set -m; cleanup() reaches it if we get killed
@@ -955,6 +973,23 @@ marker_seen() {
   tail -5 "$file" | grep -qE "^[[:space:]]*\`{0,2}${marker}\`{0,2}[[:space:]]*\$"
 }
 
+# Posts a parsed gate verdict as the PR's `## Gate verdict` comment. The gate
+# session runs as the reviewer agent itself (no wrapper session), so the
+# orchestrator posts its output, deterministically. Capped below GitHub's
+# 65536-char comment limit. Fail-open: a missing comment never blocks the gate.
+# $1 = pr, $2 = gate output file, $3 = attempt label.
+post_gate_verdict() {
+  local pr="$1" gate_out="$2" attempt_label="$3"
+  local body_file="${gate_out%.txt}.comment.md"
+  {
+    echo "## Gate verdict (external gate, session $SESSION_ID, $attempt_label)"
+    echo
+    head -c 60000 "$gate_out"
+  } > "$body_file"
+  gh pr comment "$pr" --body-file "$body_file" >/dev/null 2>&1 \
+    || echo "[gate] PR #$pr — could not post the gate verdict comment ($attempt_label); verdict kept in $gate_out" | log
+}
+
 # Decides how much a gate round reviews: "full" (the whole PR against the base
 # branch) or "fix-diff" (only what the last fix session pushed, plus a re-check
 # of the previous round's BLOCKING findings -- see #45). Fails closed to
@@ -1103,7 +1138,7 @@ run_external_gates() {
       gate_scope=$(resolve_gate_scope "$round" "$prev_sha" "$round_sha" "$prev_gate_out")
       scope_block=""
       if [[ "$gate_scope" == "fix-diff" ]]; then
-        scope_block="This is a RE-GATE (round $round) after a fix session. The previous gate round reviewed commit \`$prev_sha\`; its verdict, captured by the orchestrator, is in \`$prev_gate_out\` (authoritative — read it from that file, not from PR comments). Pass the agent this reviewed commit, this verdict file path and the current head \`$round_sha\`, and tell it to run in re-gate mode: re-check the previous BLOCKING findings and review only the fix diff \`$prev_sha..$round_sha\`."
+        scope_block="This is a RE-GATE (round $round) after a fix session: run in re-gate mode. PREV = \`$prev_sha\` (the commit the previous round reviewed), HEAD = \`$round_sha\`. The previous verdict, captured by the orchestrator, is in \`$prev_gate_out\` (authoritative — read it from that file, not from PR comments). Re-check its BLOCKING findings and review only the fix diff \`$prev_sha..$round_sha\`."
       elif [[ $round -gt 1 ]]; then
         echo "[gate] PR #$pr — round $round falls back to a full re-gate (previous reviewed commit unavailable or not an ancestor of the head)" | log
       fi
@@ -1127,21 +1162,21 @@ run_external_gates() {
         gate_in="$STATE_DIR/gate-pr$pr-round$round$attempt_suffix.$SESSION_ID.input.md"
         gate_out="$STATE_DIR/gate-pr$pr-round$round$attempt_suffix.$SESSION_ID.output.txt"
         cat > "$gate_in" <<EOF
-You are the EXTERNAL review gate (arbiter tier) of a ralph-gh loop. Repo: $REPO_ROOT. Evaluate PR #$pr (branch \`$branch\`, base \`$RALPH_DEFAULT_BASE_BRANCH\`) for issue #$issue.
+You are the EXTERNAL review gate (arbiter tier) of a ralph-gh loop. Repo: $REPO_ROOT. Review PR #$pr (branch \`$branch\`, base \`$RALPH_DEFAULT_BASE_BRANCH\`) for issue #$issue, following your agent instructions.${scope_block:+
 
-1. Spawn the \`ralph-gate-reviewer\` agent (Agent tool, subagent_type: "ralph-gate-reviewer") with the issue number, branch, PR number and base branch. If the repo's AGENTS.md prescribes its own gate agent, spawn that one instead.${scope_block:+
-   $scope_block}
-2. Wait for the agent to return its verdict. Your job is NOT done until it has — narrating intermediate status (e.g. "waiting on the reviewer to reconcile the reports") and exiting without a verdict is a protocol violation, not a valid way to end the session.
-3. Post the agent's full verdict as a comment on PR #$pr under the header \`## Gate verdict\` with the suffix \`(external gate, session $SESSION_ID, $attempt_label)\`.
-4. Print the agent's full verdict in your output too, unabridged — the orchestrator hands it to the fix session and to the next re-gate.
-5. On the LAST line of your output — and it MUST be the last line — print exactly one of these two words in plain text — no markdown formatting, no backticks, no quotes around it: GATE:PASS or GATE:FAIL. The verdict is FAIL if and only if the agent reported at least one BLOCKING finding.
+$scope_block}
 
-You must NOT modify files, push, merge, or edit labels. You only review and comment.
+Your output IS the verdict: the orchestrator posts it on the PR as the \`## Gate verdict\` comment, hands it to the fix session and to the next re-gate. So:
+1. Your job is NOT done until the review is complete. If you delegate to sub-agents, wait for every one of them — narrating intermediate status (e.g. "waiting on the reviewer to reconcile the reports") and exiting without a verdict is a protocol violation, not a valid way to end the session.
+2. Print your full structured verdict, unabridged, as your final answer.
+3. On the LAST line of your output — and it MUST be the last line — print exactly one of these two words in plain text — no markdown formatting, no backticks, no quotes around it: GATE:PASS or GATE:FAIL. The verdict is FAIL if and only if you reported at least one BLOCKING finding.
+
+You must NOT modify files, push, merge, edit labels, or post comments. You only review.
 EOF
         echo "[gate] PR #$pr issue #$issue — external gate $attempt_label (scope: $gate_scope)" | log
         upsert_pr_status_comment "$pr" "external gate $attempt_label started (scope: $gate_scope)"
         gate_rc=0
-        run_claude_step "$gate_in" "$gate_out" || gate_rc=$?
+        run_claude_step "$gate_in" "$gate_out" "$RALPH_GATE_AGENT" || gate_rc=$?
         # Checked before the timeout/kill branch below: a usage limit is never
         # a real gate FAIL (see #24) -- stop this PR's round loop and propagate
         # the hit to the main loop via USAGE_LIMIT_HIT instead of letting the
@@ -1164,8 +1199,8 @@ EOF
           gate_result="timeout"
           break
         fi
-        if marker_seen "$gate_out" 'GATE:PASS'; then gate_result="pass"; break; fi
-        if marker_seen "$gate_out" 'GATE:FAIL'; then gate_result="fail"; break; fi
+        if marker_seen "$gate_out" 'GATE:PASS'; then gate_result="pass"; post_gate_verdict "$pr" "$gate_out" "$attempt_label"; break; fi
+        if marker_seen "$gate_out" 'GATE:FAIL'; then gate_result="fail"; post_gate_verdict "$pr" "$gate_out" "$attempt_label"; break; fi
         # Unparsable/absent verdict (includes a crashed session leaving
         # $gate_out empty, and a session that narrated status instead of
         # printing the marker).
