@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.1.0](https://github.com/Simi24/ralph-gh/compare/v1.0.0...v1.1.0) (2026-09-30)
+
+
+### Features
+
+* replace the inner review gate with an in-context self-check ([#51](https://github.com/Simi24/ralph-gh/issues/51)) ([f0c056d](https://github.com/Simi24/ralph-gh/commit/f0c056d70f2fb255754576188b4fae88dcbf680e))
+* run the external gate as the reviewer agent, no wrapper session ([#47](https://github.com/Simi24/ralph-gh/issues/47)) ([d131e4f](https://github.com/Simi24/ralph-gh/commit/d131e4fe124d43ef18c0559724d775f72a457551))
+* triage gate findings and scope re-gates to the fix diff ([#46](https://github.com/Simi24/ralph-gh/issues/46)) ([de66fe9](https://github.com/Simi24/ralph-gh/commit/de66fe98788224248ed8aaa47e2c9cd33ebe60a4)), closes [#45](https://github.com/Simi24/ralph-gh/issues/45)
+
+
+### Bug Fixes
+
+* harden the external gate after the [#46](https://github.com/Simi24/ralph-gh/issues/46)/[#47](https://github.com/Simi24/ralph-gh/issues/47) gate follow-ups ([#50](https://github.com/Simi24/ralph-gh/issues/50)) ([6692efa](https://github.com/Simi24/ralph-gh/commit/6692efa01c7e5c5a319a1ca00ddf01d3788aa081))
+
 ## 1.0.0 (2026-09-11)
 
 
