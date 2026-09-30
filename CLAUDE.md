@@ -107,19 +107,20 @@ EOF
 gh issue edit N --remove-label "ralph:in-progress" --add-label "ralph:needs-review"
 ```
 
-### 7. REVIEW GATE (advisory tier — fix findings NOW, in this context)
+### 7. SELF-CHECK (in this context — no reviewer agent)
 
-This inner gate exists so you fix findings cheaply while you still have the context. It does NOT authorize a merge: after you exit, the orchestrator runs its own EXTERNAL gate (a fresh session spawning the same reviewer agent) and only its verdict counts. A clean inner gate means the external one will pass on round 1.
+The review that counts runs after you exit: the orchestrator's EXTERNAL gate, a fresh session running as the reviewer agent against your PR, whose verdict alone decides the merge. It fails only on BLOCKING findings, and a FAIL costs a focused fix session plus a re-gate scoped to the fix diff. So do NOT spend a second full review here: check your own work against exactly what the external gate fails on.
 
-Spawn the `ralph-gate-reviewer` agent (`subagent_type: "ralph-gate-reviewer"`) with the issue number, the branch and the PR. It runs a two-axis review (Standards + Spec, via the user's code-review skill when one is installed), an adversarial correctness pass and an AC-coverage table, and returns a structured `PASS`/`FAIL` verdict. If the repo's `AGENTS.md` prescribes its own gate agent, the repo's agent wins — but a gate MUST run either way.
+1. **Verify is green** on the commit you pushed (re-run the §5 commands if anything changed since).
+2. **Every AC is met and evidenced**: for each `- [ ]` AC, name the test or concrete evidence (file:line) that shows it. An AC you cannot evidence: implement it now, or fail honestly (§8).
+3. **Documented rules hold**: check the diff against the hard rules of the repo's `AGENTS.md`/`CLAUDE.md` (method, dependencies, conventions, critical paths).
+4. **One read-through of the diff** (`git diff origin/<base-branch>...HEAD`), end to end, for real defects — edge cases, error paths, leftovers such as debug output. Not style.
 
-Post the full verdict as a PR comment under the header `## Gate verdict`. Any `FAIL` = gate fail: do not merge, fix the findings and re-run the gate.
+Fix what this turns up, re-run verify, commit and push. Judgement calls and nice-to-haves are out of scope: the external gate files them as FOLLOW-UP and they never block the merge.
 
-Fallback ONLY if the `ralph-gate-reviewer` agent type is unavailable in this environment:
+Post the result as a PR comment under the header `## Self-check`: the AC → evidence table and the verify outcomes. It is advisory and authorizes nothing.
 
-**7a. code-review skill** — invoke `/code-review` against the open PR. Any finding with confidence ≥ 80 = gate fail. If the skill is unavailable, run an inline review focused on bugs and repo-convention adherence (read CLAUDE.md / AGENTS.md if present at repo root).
-
-**7b. AC-coverage gate** — spawn a `general-purpose` sub-agent: given the issue's AC list and the PR diff, for each AC item determine whether the PR contains BOTH code AND at least one test that genuinely exercises it (JSON output, honest evidence). Any `covered: false` = gate fail. Post the result as a PR comment with header `## AC-coverage gate`.
+If the repo's `AGENTS.md` prescribes its own pre-PR gate agent, run that here instead — the repo wins.
 
 ### 8. RETRY POLICY on VERIFY failure
 
@@ -132,9 +133,9 @@ Classify honestly. "The test feels wrong" is NOT systemic.
 
 ### 9. MERGE DECISION — you do NOT merge. Ever.
 
-Merging is the orchestrator's job: after you exit, it runs the binding external gate on your open PR and merges only on `GATE:PASS` (per the autonomy mode). Running `gh pr merge` yourself is a protocol violation even if your inner gate passed.
+Merging is the orchestrator's job: after you exit, it runs the binding external gate on your open PR and merges only on `GATE:PASS` (per the autonomy mode). Running `gh pr merge` yourself is a protocol violation whatever your self-check found.
 
-Your responsibilities end at: PR open, `ralph:needs-review` label set, inner-gate findings fixed.
+Your responsibilities end at: PR open, `ralph:needs-review` label set, self-check posted and its findings fixed.
 
 | autonomy | your final promise |
 |---|---|
@@ -142,7 +143,7 @@ Your responsibilities end at: PR open, `ralph:needs-review` label set, inner-gat
 | `respect-hitl-arch` | `<promise>HALT</promise>` if the issue has `ralph:hitl-arch`, else `<promise>CONTINUE</promise>` |
 | `yolo` | `<promise>CONTINUE</promise>` (the orchestrator checks the allowlist) |
 
-If the inner gate fails and you cannot fix the findings in this session: label `ralph:failed:issue`, post a diagnosis, emit `<promise>CONTINUE</promise>`.
+If the self-check turns up an AC you cannot meet or a defect you cannot fix in this session: label `ralph:failed:issue`, post a diagnosis, emit `<promise>CONTINUE</promise>`.
 
 Do NOT set `ralph:done` — the orchestrator sets it after ITS merge.
 
