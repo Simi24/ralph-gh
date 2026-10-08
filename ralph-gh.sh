@@ -1599,7 +1599,7 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   fi
 
   # Whole-line matches only: a session QUOTING the contract must not stop the
-  # loop. Backticks are tolerated on top of that anchor -- CLAUDE.md's own
+  # loop. Backticks are tolerated on top of that anchor -- the iteration prompt's own
   # contract list shows each tag inline-coded (`<promise>...</promise>`), and
   # a session's literal rendering of that markdown is a valid emission, not
   # a quote of the contract (see #29).
