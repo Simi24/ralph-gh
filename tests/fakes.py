@@ -6,6 +6,7 @@ are plain functions `(SessionRequest) -> SessionResult`. Ready-made ones:
 `commits_file(name)` (writes, commits, reports done), `says(text)`.
 """
 import subprocess
+import threading
 from collections.abc import Callable
 from dataclasses import replace
 
@@ -24,11 +25,18 @@ class FakeForge:
         self.label_trail: dict[int, list[frozenset[str]]] = {}
         self.comments: dict[int, list[tuple[int, str]]] = {}  # number -> [(comment id, body)]
         self.comment_seq = 0
+        self.refuse_merge: dict[str, int] = {}  # head branch -> merges still to refuse (a conflict)
+        self.write_threads: set[int] = set()  # ids of every thread that wrote to the forge
+        self.writes = 0
         # Final-PR support: head moves are scripted through `pr_heads`.
         self.pr_heads: dict[int, str] = {}
         self.final_diff: list[str] | None = ["README.md"]  # None = unreadable
         self.ready: list[int] = []
         self.closed: list[int] = []
+
+    def _write(self) -> None:
+        self.writes += 1
+        self.write_threads.add(threading.get_ident())
 
     def add_sub_issues(self, prd: int, tickets: list[Issue]) -> None:
         for t in tickets:
@@ -45,6 +53,7 @@ class FakeForge:
         return list(self.blockers.get(number, []))
 
     def set_labels(self, number: int, *, add: tuple[str, ...] = (), remove: tuple[str, ...] = ()) -> None:
+        self._write()
         issue = self.issues[number]
         labels = (issue.labels - frozenset(remove)) | frozenset(add)
         self.issues[number] = replace(issue, labels=labels)
@@ -54,6 +63,7 @@ class FakeForge:
         self.create_comment(number, body)
 
     def create_pr(self, *, head: str, base: str, title: str, body: str, draft: bool = False) -> PullRequest:
+        self._write()
         number = 100 + len(self.prs) + 1
         self.prs[number] = {
             "head": head, "base": base, "title": title, "body": body, "state": "open", "draft": draft,
@@ -73,14 +83,21 @@ class FakeForge:
         return self.final_diff
 
     def mark_ready(self, number: int) -> None:
+        self._write()
         self.prs[number]["draft"] = False
         self.ready.append(number)
 
     def close_issue(self, number: int) -> None:
+        self._write()
         self.issues[number] = replace(self.issues[number], state="closed")
         self.closed.append(number)
 
     def merge_pr(self, number: int, *, method: str, head_sha: str) -> bool:
+        self._write()
+        head = self.prs[number]["head"]
+        if self.refuse_merge.get(head, 0) > 0:
+            self.refuse_merge[head] -= 1
+            return False
         # A pin that no longer matches the head is refused, like GitHub does.
         if number in self.pr_heads and self.pr_heads[number] != head_sha:
             return False
@@ -93,11 +110,13 @@ class FakeForge:
         return [Comment(i, b) for i, b in self.comments.get(number, [])]
 
     def create_comment(self, number: int, body: str) -> int:
+        self._write()
         self.comment_seq += 1
         self.comments.setdefault(number, []).append((self.comment_seq, body))
         return self.comment_seq
 
     def update_comment(self, comment_id: int, body: str) -> None:
+        self._write()
         for items in self.comments.values():
             for index, (i, _) in enumerate(items):
                 if i == comment_id:

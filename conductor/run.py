@@ -9,12 +9,13 @@ from pathlib import Path
 from conductor import final, graph, labels
 from conductor.config import Config
 from conductor.exploration import ensure_notes
+from conductor.lock import RunLock
 from conductor.naming import integration_branch
 from conductor.observer import NullObserver, Observer
 from conductor.ports import Agents, Blocker, Forge, Git, Issue
 from conductor.preflight import Environment, preflight
 from conductor.result import EXIT_INCOMPLETE, EXIT_OK, EXIT_STARTUP_ERROR, RunResult
-from conductor.ticket_flow import integrate_ticket
+from conductor.scheduler import work_frontier
 
 _HALTED = frozenset({labels.FAILED_ISSUE, labels.BLOCKED})
 
@@ -25,6 +26,19 @@ def run(
     git: Git,
     env: Environment | None = None,
     observer: Observer | None = None,
+) -> RunResult:
+    lock = RunLock(config.state_root / "lock")
+    if not lock.acquire():  # before anything mutates: not the board, not the state directory
+        holder = f" (pid {lock.holder})" if lock.holder else ""
+        return RunResult(EXIT_STARTUP_ERROR, f"another conductor is already running for this repo{holder}")
+    try:
+        return _run_locked(config, forge, agents, git, env, observer)
+    finally:
+        lock.release()
+
+
+def _run_locked(
+    config: Config, forge: Forge, agents: Agents, git: Git, env: Environment | None, observer: Observer | None
 ) -> RunResult:
     obs = observer or NullObserver()  # observability (#64): status comment, run.log, last-run.md
     forge, agents = obs.wrap(forge, agents)
@@ -72,16 +86,12 @@ def _work_frontier(
     notes: Path | None,
     obs: Observer,
 ) -> RunResult:
-    """Integrate tickets one at a time, always from the current frontier.
+    """Integrate tickets, up to `parallel` at a time, always from the current frontier.
 
     A failed or blocked ticket is left for a human; the loop carries on with
     whatever does not depend on it."""
-    while True:
-        tickets = forge.list_sub_issues(config.prd)
-        ready = graph.dispatchable(tickets, blockers)
-        if not ready:
-            return _finish(tickets, blockers)
-        integrate_ticket(config, forge, agents, git, ready[0], integration, notes, obs)
+    work_frontier(config, forge, agents, git, blockers, integration, notes, obs)
+    return _finish(forge.list_sub_issues(config.prd), blockers)
 
 
 def _numbers(numbers: list[int]) -> str:

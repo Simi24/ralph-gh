@@ -70,6 +70,31 @@ GATE:FAIL
 """
 
 
+def merge_fix_prompt(config: Config, ticket: int, integration: str, notes: Path | None) -> str:
+    """Merge-fix session: the ticket PR no longer merges cleanly into the integration branch."""
+    verify = "\n".join(f"- `{c}`" for c in config.verify_commands)
+    return f"""You are a MERGE-FIX session for ticket #{ticket} of PRD #{config.prd}.
+The ticket PR no longer merges cleanly: `{integration}` moved while the ticket
+was in review.
+
+Your worktree is your current directory, on the ticket branch.
+{notes_pointer(notes)}
+Run `git fetch origin`, then `git merge origin/{integration}` into your branch.
+Resolve every conflict keeping the intent of both sides, and commit the merge.
+Change nothing else.
+
+Verify commands (the conductor re-runs them itself):
+{verify}
+
+Rules: no force-push, no `--no-verify`, do not touch labels, do not merge the PR.
+
+Finish with exactly one last line, plain text:
+RALPH:DONE
+or
+RALPH:BLOCKED <short reason>
+"""
+
+
 def fix_prompt(
     config: Config, ticket: int, integration: str, notes: Path | None, *, reason: str, context: str, from_section: bool = True
 ) -> str:

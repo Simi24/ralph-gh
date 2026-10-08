@@ -38,6 +38,17 @@ class GitCli:
         self._git("worktree", "remove", "--force", str(path))
         self._git("branch", "-D", branch)
 
+    def is_behind(self, path: Path, base: str) -> bool:
+        self._git("fetch", "origin", cwd=path)
+        proc = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", f"origin/{base}", "HEAD"], cwd=path, capture_output=True, text=True
+        )
+        if proc.returncode == 0:
+            return False
+        if proc.returncode == 1:
+            return True
+        raise GitError(f"git merge-base: {proc.stderr.strip()}")
+
     def push(self, path: Path, branch: str) -> None:
         self._git("push", "origin", f"HEAD:refs/heads/{branch}", cwd=path)
 
