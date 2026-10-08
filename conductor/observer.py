@@ -5,6 +5,8 @@
 `NullObserver` is the default and does nothing.
 """
 import logging
+import queue
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -27,6 +29,7 @@ class NullObserver:
         return forge, agents
 
     def start(self) -> None: ...
+    def flush(self) -> None: ...
     def event(self, ticket: int | None, text: str) -> None: ...
     def finish(self, reason: str) -> None: ...
 
@@ -52,11 +55,14 @@ class Observer(NullObserver):
         self._timings = Timings()
         self.heartbeat = Heartbeat(lambda text: self.event(None, text), self._clock)
         self._finished = False
+        self._owner: int | None = None  # the conductor thread: the only one that writes to the forge
+        self._deferred: queue.SimpleQueue[str] = queue.SimpleQueue()
 
     def wrap(self, forge: Any, agents: Any) -> tuple[Any, Any]:
         return ObservedForge(forge, self), ObservedAgents(agents, self)
 
     def start(self) -> None:
+        self._owner = threading.get_ident()
         self._run_log.attach()
         self._run_log.banner(f"ralph-gh session: {self._session}", f"PRD: #{self._prd}")
         self._last_run.update({})
@@ -65,7 +71,21 @@ class Observer(NullObserver):
     def event(self, ticket: int | None, text: str) -> None:
         who = "PRD" if ticket is None else f"#{ticket}"
         log.info(f"[status] {who} {text}")
-        self._status.post(f"{who} {text}")
+        line = f"{who} {text}"
+        if threading.get_ident() == self._owner:
+            self.flush()  # keep the order of lines posted from other threads
+            self._status.post(line)
+        else:
+            self._deferred.put(line)  # a session or heartbeat thread: the conductor posts it
+
+    def flush(self) -> None:
+        """Post the status lines other threads left behind. Conductor thread only."""
+        while True:
+            try:
+                line = self._deferred.get_nowait()
+            except queue.Empty:
+                return
+            self._status.post(line)
 
     @contextmanager
     def phase(self, ticket: int, phase: str) -> Iterator[None]:
@@ -99,6 +119,7 @@ class Observer(NullObserver):
             return
         self._finished = True
         self.heartbeat.stop()
+        self.flush()
         self.event(None, f"run ended: {reason}")
         self._last_run.update(self._timings.snapshot(), reason)
         log.info(f"ralph-gh exited: {reason}")

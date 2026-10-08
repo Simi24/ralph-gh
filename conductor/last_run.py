@@ -4,6 +4,7 @@ It is written at startup with a sentinel reason and rewritten on every
 update, so even a hard kill leaves a file that ends with an exit reason.
 """
 import os
+import threading
 from pathlib import Path
 
 from conductor.clock import Clock, stamp
@@ -18,8 +19,13 @@ class LastRun:
         self._clock = clock
         self._header = f"# ralph-gh run — {session}\nStarted: {stamp(clock)}\nRepo: {repo}\nPRD: #{prd}\n"
         self._ended: str | None = None
+        self._lock = threading.Lock()  # sessions in worker threads update the timings too
 
     def update(self, timings: dict[int, dict[str, float]], reason: str | None = None) -> None:
+        with self._lock:
+            self._write(timings, reason)
+
+    def _write(self, timings: dict[int, dict[str, float]], reason: str | None) -> None:
         if reason is not None:
             self._ended = stamp(self._clock)
         ended = f"Ended: {self._ended}\n" if self._ended else ""
