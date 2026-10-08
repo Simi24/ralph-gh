@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from conductor.config import Config
-from conductor.prompts import notes_pointer
+from conductor.prompts import docs_pointer, notes_pointer
 
 
 @dataclass(frozen=True)
@@ -68,7 +68,7 @@ Your worktree is your current directory, on a branch based on `{integration}`.
 {notes_pointer(notes)}
 Fix ONLY these BLOCKING findings. Keep each fix minimal: no refactors, renames or
 cleanups beyond what a finding requires. The re-review checks exactly your diff.
-
+{docs_pointer(config)}
 Verify commands (the conductor re-runs them itself):
 {verify}
 

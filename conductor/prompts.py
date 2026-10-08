@@ -13,6 +13,13 @@ def notes_pointer(notes: Path | None) -> str:
     return f"Read the shared exploration notes first: {notes}\n"
 
 
+def docs_pointer(config: Config) -> str:
+    """One line naming the docs to keep in sync; empty when none are configured. Never their content."""
+    if not config.doc_files:
+        return ""
+    return f"Docs that must stay in sync with behavior: {', '.join(config.doc_files)}\n"
+
+
 def exploration_prompt(config: Config, notes: Path) -> str:
     return f"""Exploration for PRD #{config.prd}, before any implementer starts.
 
@@ -39,7 +46,7 @@ Read them yourself: `gh issue view {ticket}` and `gh issue view {config.prd}`.
 Your worktree is your current directory, based on branch `{integration}`.
 {notes_pointer(notes)}
 Build the ticket with the `tdd` skill, test-first, and commit your work.
-Before reporting done, merge `origin/{integration}` into your branch.
+{docs_pointer(config)}Before reporting done, merge `origin/{integration}` into your branch.
 
 Verify commands (the conductor re-runs them itself):
 {verify}
@@ -123,7 +130,7 @@ Read the ticket yourself: `gh issue view {ticket}`.
 Your worktree is your current directory, on the ticket branch based on `{integration}`.
 {notes_pointer(notes)}
 {scope}
-
+{docs_pointer(config)}
 Verify commands (the conductor re-runs them itself):
 {verify}
 

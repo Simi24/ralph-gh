@@ -47,6 +47,11 @@ ticket_gate_agent = "ralph-ticket-gate"  # the light acceptance-criteria gate pe
 # an unattended run never freezes. Default 7200.
 session_timeout = 7200
 
+# Docs that must stay in sync with behavior. Implementer, fix and final-fix
+# sessions get one line naming these paths ("docs that must stay in sync with
+# behavior: ..."), never their content. Default: none.
+doc_files = ["README.md"]
+
 # Model for writing sessions (exploration, implementer, fix, merge-fix,
 # final-fix), passed as `claude --model`. Unset by default: claude's own
 # default. Reviewer sessions never get --model: their agent definition pins it.

@@ -97,13 +97,14 @@ $EDITOR .ralph-gh.toml
 - `parallel` — tickets worked at once (default 3); see [Parallelism and its usage cost](#parallelism-and-its-usage-cost)
 - `gate_fix_rounds` — fix rounds before giving up, per ticket and for the final review (default 2)
 - `reviewer_agent`, `ticket_gate_agent` — the agents the final review and the ticket gate run as
+- `doc_files` — docs that must stay in sync with behavior (e.g. `["README.md"]`); implementer and fix sessions get one pointer line naming them, never their content
 - `session_timeout` — seconds before a hung session is killed (default 7200)
 - `model` — model for writing sessions (reviewers stay on their pinned model)
 - `yolo_allowlist` — regexes of files allowed to auto-merge in `yolo` mode
 - `preflight_command`, `preflight_health_url`, `preflight_health_retries` — if the tests need infra (docker compose, LocalStack, ...); a failed command or a health check that never goes green aborts the run before any session is spawned. Each health probe is capped at 3s connect / 5s total
 - `wait_for_reset`, `usage_wait_seconds` — see [Usage limits](#usage-limits)
 
-**Migrating from the bash version:** a repo with only the old `.ralph-gh.config` is refused at startup with a table mapping every old `RALPH_*` variable to its new key. `--max-iterations` and `RALPH_DOC_FILES` have no counterpart (a run is one PRD, and keeping docs in sync is a rule for your repo's `AGENTS.md`).
+**Migrating from the bash version:** a repo with only the old `.ralph-gh.config` is refused at startup with a table mapping every old `RALPH_*` variable to its new key. `--max-iterations` has no counterpart (a run is one PRD); `RALPH_DOC_FILES` became `doc_files`.
 
 Then create the PRD and label its tickets:
 

@@ -17,11 +17,13 @@ class LegacyConfigTest(unittest.TestCase):
             self.assertIn(f"{old} -> {new}", message)
         self.assertIn("RALPH_GATE_AGENT -> reviewer_agent", message)
 
-    def test_doc_files_is_dropped_not_mapped(self) -> None:
-        self.assertNotIn("doc_files", [new for _, new, _ in MAPPING])
-        with self.assertRaises(ConfigError):
-            parse_config({"verify_commands": ["x"], "doc_files": ["README.md"]})
-        self.assertIn("RALPH_DOC_FILES (no counterpart", legacy_message())
+    def test_doc_files_is_mapped_and_validated(self) -> None:
+        self.assertIn("RALPH_DOC_FILES -> doc_files", legacy_message())
+        self.assertEqual(parse_config({"verify_commands": ["x"], "doc_files": ["README.md"]}).doc_files, ("README.md",))
+        self.assertEqual(parse_config({"verify_commands": ["x"]}).doc_files, ())
+        for bad in ("README.md", [""], [3], ["a\nb"]):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ConfigError, "doc_files"):
+                parse_config({"verify_commands": ["x"], "doc_files": bad})
 
     def test_toml_wins_when_both_exist(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -54,10 +54,10 @@ class FixLoopTest(unittest.TestCase):
             "final-review": says("GATE:PASS"),
         }
 
-    def start(self, *tickets: Issue, verify: str = "true", rounds: int = 2):
+    def start(self, *tickets: Issue, verify: str = "true", rounds: int = 2, doc_files: tuple[str, ...] = ()):
         self.forge.add_sub_issues(PRD, list(tickets))
         self.agents = FakeAgents(self.behaviors)
-        config = Config(verify_commands=(verify,), gate_fix_rounds=rounds).with_run(
+        config = Config(verify_commands=(verify,), gate_fix_rounds=rounds, doc_files=doc_files).with_run(
             prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root, autonomy="halt-each-pr"
         )
         notes = notes_path(config)
@@ -93,6 +93,20 @@ class FixLoopTest(unittest.TestCase):
         self.assertEqual(fix.add_dirs, (self.notes.parent,))
         (pr,) = [p for p in self.forge.prs.values() if "ticket-1" in p["head"]]
         self.assertEqual(pr["state"], "merged")
+
+    def test_implementer_and_fix_prompts_point_at_the_doc_files_without_their_content(self) -> None:
+        self.behaviors["fix"] = fix_with_file("fixed.txt")
+        self.start(ticket(1), verify="test -f fixed.txt", doc_files=("README.md", "docs/guide.md"))
+        line = "Docs that must stay in sync with behavior: README.md, docs/guide.md"
+        implementer, fix = self.agents.requests[0], self.agents.requests[1]
+        self.assertEqual((implementer.role, fix.role), ("implementer", "fix"))
+        self.assertIn(line, implementer.prompt)
+        self.assertIn(line, fix.prompt)
+        self.assertNotIn("hello", fix.prompt)  # README.md's content is never pasted
+
+    def test_no_doc_files_means_no_pointer_line(self) -> None:
+        self.start(ticket(1))
+        self.assertNotIn("Docs that must stay in sync", self.agents.requests[0].prompt)
 
     def test_verify_fix_prompt_carries_the_notes_pointer(self) -> None:
         self.behaviors["fix"] = fix_with_file("fixed.txt")
