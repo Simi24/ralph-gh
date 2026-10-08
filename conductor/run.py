@@ -12,6 +12,7 @@ from conductor.config import Config
 from conductor.exploration import ensure_notes
 from conductor.naming import integration_branch
 from conductor.ports import Agents, Blocker, Forge, Git, Issue
+from conductor.preflight import Environment, preflight
 from conductor.ticket_flow import integrate_ticket
 
 EXIT_OK = 0
@@ -27,7 +28,11 @@ class RunResult:
     reason: str
 
 
-def run(config: Config, forge: Forge, agents: Agents, git: Git) -> RunResult:
+def run(config: Config, forge: Forge, agents: Agents, git: Git, env: Environment | None = None) -> RunResult:
+    if env is not None:  # startup checks: nothing below runs if one fails
+        failure = preflight(config, env)
+        if failure is not None:
+            return RunResult(EXIT_STARTUP_ERROR, f"preflight failed: {failure}")
     prd = forge.get_issue(config.prd)
     tickets = forge.list_sub_issues(config.prd)
     if not tickets:
