@@ -11,9 +11,13 @@ A ticket flow is a generator, so many run at once on one conductor thread
 (conductor/scheduler.py). It yields a `Job` for every step that only runs a
 session or a local command; the scheduler runs jobs in worker threads and
 sends each result back. Everything else (labels, PRs, merges, comments, git)
-happens in the generator body, so only the conductor thread writes.
+happens in the generator body, so only the conductor thread writes. Before a merge the
+flow yields `WAIT_FOR_GREEN`: the scheduler resumes it once the integration branch is
+verified (conductor/integration_check.py).
 A PR that stops merging cleanly goes to a merge-fix session (bounded by its
-own counter, also `gate_fix_rounds`) and is re-verified, not re-gated.
+own counter, also `gate_fix_rounds`), then is re-verified and gated again: a bad
+resolution could drop code of an integrated ticket. The new gate is told which
+commit resolved the conflict; a FAIL goes through the normal fix rounds.
 
 A `git` or `gh` failure inside a flow (an `InfraError`) is an infrastructure
 failure, never a traceback: the ticket gets `ralph:failed:systemic` and a
@@ -31,6 +35,7 @@ from typing import Any
 from conductor import final, labels
 from conductor.config import Config
 from conductor.findings import blocking_findings, tail
+from conductor.integration_check import WAIT_FOR_GREEN
 from conductor.markers import OutcomeKind, Verdict, outcome_of, usable, verdict_of
 from conductor.naming import ticket_branch
 from conductor.observer import NullObserver, Observer
@@ -68,13 +73,13 @@ def _writer(config: Config, role: str, prompt: str, cwd: Path, notes: Path | Non
 
 
 def _gate(
-    config: Config, agents: Agents, ticket: int, integration: str, cwd: Path
+    config: Config, agents: Agents, ticket: int, integration: str, cwd: Path, merge_commit: str | None = None
 ) -> tuple[Verdict, str, SessionResult]:
     """One gate, retried once with a fresh session when a healthy session gave
     no parsable verdict. Timeouts and usage limits are not retried."""
     request = SessionRequest(
         role="ticket-gate",
-        prompt=ticket_gate_prompt(config, ticket, integration),
+        prompt=ticket_gate_prompt(config, ticket, integration, merge_commit),
         cwd=cwd,
         agent=config.ticket_gate_agent,
         timeout=config.session_timeout,
@@ -117,7 +122,7 @@ def _stop(
 
 
 Job = Callable[[], Any]
-Flow = Generator[Job, Any, TicketResult]
+Flow = Generator[Any, Any, TicketResult]  # yields a Job, or WAIT_FOR_GREEN
 
 
 def _session(agents: Agents, request: SessionRequest) -> Job:
@@ -127,9 +132,11 @@ def _session(agents: Agents, request: SessionRequest) -> Job:
 def integrate_ticket(
     config: Config, forge: Forge, agents: Agents, git: Git, ticket: Issue, integration: str, notes: Path | None,
     obs: Observer | None = None, sessions: SessionRegistry | None = None, resume: PullRequest | None = None,
+    green_sha: str | None = None,
 ) -> Flow:
     """`resume`: the open PR of a ticket an earlier run left in review. It is not claimed or
-    re-implemented: its branch is checked out and goes through verify, gate and merge."""
+    re-implemented: its branch is checked out and goes through verify, gate and merge.
+    `green_sha`: the last integration commit that passed verify; the implementer merges that one."""
     obs = obs or NullObserver()
     branch = ticket_branch(config.branch_prefix, config.prd, ticket.number)
     worktree = prd_dir(config.state_root, config.prd) / "worktrees" / f"ticket-{ticket.number}"
@@ -143,7 +150,7 @@ def integrate_ticket(
         return _stop(forge, git, worktree, branch, ticket, TicketStatus.SYSTEMIC, f"setup failed: {error}", push=False)
     try:
         return (yield from _flow(
-            config, forge, agents, git, ticket, integration, notes, obs, branch, worktree, sessions, resume
+            config, forge, agents, git, ticket, integration, notes, obs, branch, worktree, sessions, resume, green_sha
         ))
     except InfraError as error:  # a git/gh call failed: this ticket ends, the others carry on
         return _stop(forge, git, worktree, branch, ticket, TicketStatus.SYSTEMIC, str(error))
@@ -173,6 +180,7 @@ def _merged_anyway(forge: Forge, pr: PullRequest, branch: str, integration: str)
 def _flow(
     config: Config, forge: Forge, agents: Agents, git: Git, ticket: Issue, integration: str, notes: Path | None,
     obs: Observer, branch: str, worktree: Path, sessions: SessionRegistry | None, resume: PullRequest | None,
+    green_sha: str | None,
 ) -> Flow:
     n = ticket.number
 
@@ -181,7 +189,7 @@ def _flow(
 
     if resume is None:
         session = yield _session(
-            agents, _writer(config, "implementer", implementer_prompt(config, n, integration, notes), worktree, notes)
+            agents, _writer(config, "implementer", implementer_prompt(config, n, integration, notes, green_sha), worktree, notes)
         )
         outcome = outcome_of(session)
         if outcome.kind is OutcomeKind.BLOCKED:
@@ -192,7 +200,8 @@ def _flow(
     pr: PullRequest | None = resume
     rounds = 0  # verify-fix and gate-fix rounds together
     merge_rounds = 0  # merge-fix attempts, bounded apart from the rounds above
-    gated = False  # the current code has a PASS: only a merge-fix keeps it
+    gated = False  # the current code has a PASS
+    merge_commit: str | None = None  # the last merge-fix's commit: the gate is told to inspect it
     while True:
         with obs.phase(n, "verify"):  # the first run and every re-run after a fix
             verify = yield lambda: check_verify(config.verify_commands, worktree, sessions)
@@ -209,7 +218,7 @@ def _flow(
                 forge.set_labels(n, add=(labels.IN_REVIEW,), remove=(labels.IN_PROGRESS,))
             text = ""
             if not gated:
-                verdict, text, _ = yield lambda: _gate(config, agents, n, integration, worktree)
+                verdict, text, _ = yield lambda: _gate(config, agents, n, integration, worktree, merge_commit)
                 if verdict is Verdict.UNPARSABLE:
                     return stop(
                         TicketStatus.FAILED,
@@ -217,6 +226,7 @@ def _flow(
                     )
                 gated = verdict is Verdict.PASS
             if gated:
+                yield WAIT_FOR_GREEN  # merges are serial and only onto a verified-green integration branch
                 if forge.merge_pr(pr.number, method="merge", head_sha=head_sha) or _merged_anyway(
                     forge, pr, branch, integration
                 ):
@@ -241,7 +251,9 @@ def _flow(
                     return stop(TicketStatus.BLOCKED, fixed.reason or "no reason given")
                 if fixed.kind is not OutcomeKind.DONE:
                     return stop(TicketStatus.FAILED, f"merge-fix attempt {merge_rounds} gave no usable outcome")
-                continue  # re-verify, push, merge: no new gate
+                merge_commit = git.head_sha(worktree)  # the resolution: re-verified, then gated again
+                gated = False
+                continue
             findings, from_section = blocking_findings(text)
             fix = fix_prompt(config, n, integration, notes, reason="gate", context=findings, from_section=from_section)
             failure = f"the ticket gate failed after {rounds} fix round(s)."

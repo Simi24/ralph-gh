@@ -31,6 +31,7 @@ class FakeForge:
         # Final-PR support: head moves are scripted through `pr_heads`.
         self.pr_heads: dict[int, str] = {}
         self.final_diff: list[str] | None = ["README.md"]  # None = unreadable
+        self.on_merge: Callable[[str, str], None] | None = None  # (head, base): merge for real, like GitHub
         self.ready: list[int] = []
         self.closed: list[int] = []
 
@@ -108,6 +109,8 @@ class FakeForge:
         # A pin that no longer matches the head is refused, like GitHub does.
         if number in self.pr_heads and self.pr_heads[number] != head_sha:
             return False
+        if self.on_merge is not None:
+            self.on_merge(head, self.prs[number]["base"])
         self.prs[number]["state"] = "merged"
         self.merges.append((number, method, head_sha))
         return True

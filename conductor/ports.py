@@ -142,6 +142,20 @@ class Git(Protocol):
         """Delete `branch` on origin. Raise when it cannot be deleted."""
         ...
 
+    def remote_sha(self, branch: str) -> str:
+        """Fetch, then the 40-hex commit `origin/<branch>` points at. Raise when it cannot be read."""
+        ...
+
+    def add_detached_worktree(self, path: Path, sha: str) -> None:
+        """Worktree at `path`, detached at the 40-hex `sha`: exactly that commit, whatever moves later."""
+        ...
+
+    def remove_detached_worktree(self, path: Path) -> None: ...
+    def remove_stale_worktrees(self, root: Path) -> None:
+        """Remove every worktree under `root` (forced), prune, and delete the local branch each
+        held. Best effort: keeps going past a failure and raises InfraError at the end."""
+        ...
+
     def is_ancestor(self, ancestor: str, descendant: str) -> bool:
         """True only when both are 40-hex shas, `descendant` could be fetched and `ancestor`
         is in its history. Any doubt or error is False."""

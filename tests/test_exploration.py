@@ -24,6 +24,7 @@ class ExplorationTest(unittest.TestCase):
         self.repo = TempRepo()
         self.addCleanup(self.repo.cleanup)
         self.forge = FakeForge([Issue(PRD, "Python conductor rewrite")])
+        self.forge.on_merge = self.repo.merge_branch  # the integration branch gets the merged work, which verify checks
         self.forge.add_sub_issues(PRD, [Issue(TICKET, "exploration", frozenset({"ralph:queued"}))])
         self.git = GitCli(self.repo.checkout)
         self.config = Config(verify_commands=("test -f feature.txt",)).with_run(

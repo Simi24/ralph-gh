@@ -46,6 +46,7 @@ class FixLoopTest(unittest.TestCase):
         self.repo = TempRepo()
         self.addCleanup(self.repo.cleanup)
         self.forge = FakeForge([Issue(PRD, "Fix loops")])
+        self.forge.on_merge = self.repo.merge_branch  # the integration branch gets the merged work, which verify checks
         self.behaviors = {
             "implementer": implement_by_ticket,
             "ticket-gate": says("GATE:PASS"),

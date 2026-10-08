@@ -35,5 +35,15 @@ class TempRepo:
             raise RuntimeError(f"git {' '.join(args)}: {proc.stderr}")
         return proc.stdout.strip()
 
+    def merge_branch(self, head: str, base: str) -> None:
+        """What GitHub's merge button does: a real merge commit of `head` onto `base`, on origin.
+        Plumbing in the bare repo, so no checkout is disturbed. Raises on a conflict."""
+        into = self.git("rev-parse", f"refs/heads/{base}", cwd=self.origin)
+        other = self.git("rev-parse", f"refs/heads/{head}", cwd=self.origin)
+        tree = self.git("merge-tree", "--write-tree", into, other, cwd=self.origin)
+        identity = ["-c", "user.name=Test", "-c", "user.email=test@example.com"]
+        merge = self.git(*identity, "commit-tree", tree, "-p", into, "-p", other, "-m", f"Merge {head}", cwd=self.origin)
+        self.git("update-ref", f"refs/heads/{base}", merge, into, cwd=self.origin)
+
     def cleanup(self) -> None:
         self._tmp.cleanup()
