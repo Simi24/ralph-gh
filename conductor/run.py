@@ -5,9 +5,11 @@ Later tickets extend this loop (frontier, parallelism, fix rounds, final PR)
 through the same ports.
 """
 from dataclasses import dataclass
+from pathlib import Path
 
 from conductor import graph, labels
 from conductor.config import Config
+from conductor.exploration import ensure_notes
 from conductor.markers import OutcomeKind, Verdict, outcome_of, verdict_of
 from conductor.naming import integration_branch, ticket_branch
 from conductor.ports import Agents, Blocker, Forge, Git, Issue, SessionRequest
@@ -43,11 +45,13 @@ def run(config: Config, forge: Forge, agents: Agents, git: Git) -> RunResult:
 
     integration = integration_branch(config.branch_prefix, config.prd, prd.title)
     git.create_branch(integration, config.base_branch)
-    return _work_frontier(config, forge, agents, git, blockers, integration)
+    notes = ensure_notes(config, agents)
+    return _work_frontier(config, forge, agents, git, blockers, integration, notes)
 
 
 def _work_frontier(
-    config: Config, forge: Forge, agents: Agents, git: Git, blockers: dict[int, list[Blocker]], integration: str
+    config: Config, forge: Forge, agents: Agents, git: Git, blockers: dict[int, list[Blocker]], integration: str,
+    notes: Path | None,
 ) -> RunResult:
     """Integrate tickets one at a time, always from the current frontier."""
     while True:
@@ -57,7 +61,7 @@ def _work_frontier(
             if any(labels.QUEUED in t.labels for t in tickets):
                 return RunResult(EXIT_INCOMPLETE, "waiting on tickets or issues that are not done")
             return RunResult(EXIT_OK, "integrated")
-        result = _integrate_ticket(config, forge, agents, git, ready[0], integration)
+        result = _integrate_ticket(config, forge, agents, git, ready[0], integration, notes)
         if result.exit_code != EXIT_OK:
             return result
 
@@ -68,7 +72,8 @@ def _fail(forge: Forge, ticket: Issue, label: str, reason: str) -> RunResult:
 
 
 def _integrate_ticket(
-    config: Config, forge: Forge, agents: Agents, git: Git, ticket: Issue, integration: str
+    config: Config, forge: Forge, agents: Agents, git: Git, ticket: Issue, integration: str,
+    notes: Path | None = None,
 ) -> RunResult:
     branch = ticket_branch(config.branch_prefix, config.prd, ticket.number)
     worktree = config.state_root / f"prd-{config.prd}" / "worktrees" / f"ticket-{ticket.number}"
@@ -79,10 +84,11 @@ def _integrate_ticket(
         session = agents.start(
             SessionRequest(
                 role="implementer",
-                prompt=implementer_prompt(config, ticket.number, integration),
+                prompt=implementer_prompt(config, ticket.number, integration, notes),
                 cwd=worktree,
                 model=config.model,
                 timeout=config.session_timeout,
+                add_dirs=(notes.parent,) if notes else (),
             )
         )
         outcome = outcome_of(session)
