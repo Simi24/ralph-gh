@@ -57,8 +57,9 @@ doc_files = ["README.md"]
 # default. Reviewer sessions never get --model: their agent definition pins it.
 # model = "claude-sonnet-5"
 
-# yolo autonomy only (see README): regexes (Python re.search) applied to every
-# path of the final PR's diff. The final PR auto-merges only if EVERY changed
+# yolo autonomy only (see README): Python regexes matched with re.search
+# (UNANCHORED: "README\.md" also matches "docs/README.md", so anchor entries
+# with ^, as below) against every path of the final PR's diff. The final PR auto-merges only if EVERY changed
 # file matches at least one. An empty list means yolo never merges.
 yolo_allowlist = ['^(src/|tests/|docs/)', '^README\.md$']
 

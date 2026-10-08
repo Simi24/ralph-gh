@@ -100,7 +100,7 @@ $EDITOR .ralph-gh.toml
 - `doc_files` — docs that must stay in sync with behavior (e.g. `["README.md"]`); implementer and fix sessions get one pointer line naming them, never their content
 - `session_timeout` — seconds before a hung session is killed (default 7200)
 - `model` — model for writing sessions (reviewers stay on their pinned model)
-- `yolo_allowlist` — regexes of files allowed to auto-merge in `yolo` mode
+- `yolo_allowlist` — regexes of files allowed to auto-merge in `yolo` mode. Entries are Python regexes matched with `re.search`, i.e. **unanchored**: `README\.md` also matches `docs/README.md`. Anchor them with `^` (and `$`), e.g. `^README\.md$`
 - `preflight_command`, `preflight_health_url`, `preflight_health_retries` — if the tests need infra (docker compose, LocalStack, ...); a failed command or a health check that never goes green aborts the run before any session is spawned. Each health probe is capped at 3s connect / 5s total
 - `wait_for_reset`, `usage_wait_seconds` — see [Usage limits](#usage-limits)
 
@@ -141,7 +141,7 @@ The mode only governs the **final PR**: ticket PRs are always merged by the cond
 |---|---|
 | `halt-each-pr` | Never merges the final PR; the review verdict is posted, the PR is marked ready, merge is yours. |
 | `respect-hitl-arch` (default) | Merges the final PR on PASS, unless the PRD or any ticket has `ralph:hitl-arch` (then it is withheld for a human). |
-| `yolo` | Like `respect-hitl-arch`, and additionally merges only if **every** changed file of the final diff matches `yolo_allowlist`. An empty allowlist, an invalid regex or an unreadable diff withholds the merge (fail closed). |
+| `yolo` | Like `respect-hitl-arch`, and additionally merges only if **every** changed file of the final diff matches `yolo_allowlist`. An empty allowlist, an invalid regex or an unreadable diff withholds the merge (fail closed). Allowlist entries are Python regexes matched with `re.search` (unanchored), so anchor them with `^`. |
 
 A withheld merge labels the PRD `ralph:gate-passed`, comments why on the PR, and the run exits 0. If the head of the final PR moved between the review and the merge, nothing is merged: the PR stays open and the run exits 3 (`head moved after review`); rerun to review it again in full.
 
