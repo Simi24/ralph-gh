@@ -36,6 +36,7 @@ class TracerBulletTest(unittest.TestCase):
             {
                 "implementer": implementer or commits_file("feature.txt"),
                 "ticket-gate": gate or says("criteria met\nGATE:PASS"),
+                "fix": says("RALPH:DONE"),
             }
         )
 
@@ -121,7 +122,9 @@ class TracerBulletTest(unittest.TestCase):
                 notes = notes_path(config)
                 notes.parent.mkdir(parents=True)
                 notes.write_text("notes")
-                agents = FakeAgents({"implementer": commits_file("feature.txt"), "ticket-gate": says(text)})
+                agents = FakeAgents(
+                    {"implementer": commits_file("feature.txt"), "ticket-gate": says(text), "fix": says("RALPH:DONE")}
+                )
                 result = run(config, forge, agents, GitCli(repo.checkout))
                 self.assertEqual(result.exit_code, EXIT_INCOMPLETE)
                 self.assertEqual(forge.merges, [])

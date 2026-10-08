@@ -22,6 +22,7 @@ class FakeForge:
         self.prs: dict[int, dict[str, str]] = {}
         self.merges: list[tuple[int, str, str]] = []  # (pr, method, head_sha)
         self.label_trail: dict[int, list[frozenset[str]]] = {}
+        self.comments: dict[int, list[str]] = {}
 
     def add_sub_issues(self, prd: int, tickets: list[Issue]) -> None:
         for t in tickets:
@@ -42,6 +43,9 @@ class FakeForge:
         labels = (issue.labels - frozenset(remove)) | frozenset(add)
         self.issues[number] = replace(issue, labels=labels)
         self.label_trail.setdefault(number, [issue.labels]).append(labels)
+
+    def comment(self, number: int, body: str) -> None:
+        self.comments.setdefault(number, []).append(body)
 
     def create_pr(self, *, head: str, base: str, title: str, body: str) -> PullRequest:
         number = 100 + len(self.prs) + 1
