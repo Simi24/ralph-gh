@@ -84,6 +84,36 @@ class FinalPrTest(unittest.TestCase):
         self.assertEqual([m[1] for m in self.forge.merges], ["merge"])  # only the ticket merge
         self.assertTrue(self.final_pr()[1]["draft"])
 
+    def test_a_closed_sub_issue_neither_blocks_the_review_nor_gets_a_closes_line(self) -> None:
+        self.forge.add_sub_issues(
+            PRD,
+            [
+                Issue(QUEUED, "queued ticket", frozenset({"ralph:queued"})),
+                Issue(OTHER, "other", frozenset({"ralph:integrated"})),
+                Issue(56, "wontfix", frozenset(), state="closed"),
+            ],
+        )
+        result = self.go(autonomy="halt-each-pr")
+        self.assertEqual(result.exit_code, EXIT_OK)
+        self.assertEqual(self.reviews(), 1)
+        self.assertNotIn("Closes #56", self.final_pr()[1]["body"])
+        self.assertIn(f"Closes #{QUEUED}", self.final_pr()[1]["body"])
+
+    def test_an_open_sub_issue_that_never_opted_in_blocks_the_review_and_is_named(self) -> None:
+        self.forge.add_sub_issues(
+            PRD,
+            [
+                Issue(QUEUED, "queued ticket", frozenset({"ralph:queued"})),
+                Issue(OTHER, "other", frozenset({"ralph:integrated"})),
+                Issue(57, "no ralph label", frozenset({"bug"})),
+                Issue(58, "no label either", frozenset()),
+            ],
+        )
+        result = self.go()
+        self.assertEqual(result.exit_code, EXIT_INCOMPLETE)
+        self.assertEqual(result.reason, "final review not started: tickets #57, #58 are not integrated")
+        self.assertEqual(self.reviews(), 0)
+
     def test_pass_marks_ready_posts_the_verdict_and_merges_squash_pinned_to_the_reviewed_head(self) -> None:
         result = self.go()
         number, pr = self.final_pr()

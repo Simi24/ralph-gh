@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from conductor import final, graph, labels, reconcile
+from conductor.final import numbers, not_started_reason
 from conductor.config import Config
 from conductor.exploration import ensure_notes
 from conductor.lock import RunLock
@@ -118,10 +119,6 @@ def _work_frontier(
     return _finish(forge.list_sub_issues(config.prd), blockers)
 
 
-def _numbers(numbers: list[int]) -> str:
-    return ", ".join(f"#{n}" for n in sorted(numbers))
-
-
 def _finish(tickets: list[Issue], blockers: dict[int, list[Blocker]]) -> RunResult:
     """Why the frontier is empty: cascade, waiting, failures left, or done."""
     cascade = graph.halted_blockers(tickets, blockers, _HALTED)
@@ -129,11 +126,15 @@ def _finish(tickets: list[Issue], blockers: dict[int, list[Blocker]]) -> RunResu
         blocking = sorted({n for found in cascade.values() for n in found})
         return RunResult(
             EXIT_INCOMPLETE,
-            f"cascade: tickets {_numbers(list(cascade))} depend on failed or blocked {_numbers(blocking)}",
+            f"cascade: tickets {numbers(list(cascade))} depend on failed or blocked {numbers(blocking)}",
         )
-    if any(labels.QUEUED in t.labels for t in tickets):
+    live = [t for t in tickets if t.state == "open"]  # a closed sub-issue is a human's call: ignored
+    if any(labels.QUEUED in t.labels for t in live):
         return RunResult(EXIT_INCOMPLETE, "waiting on tickets or issues that are not done")
-    halted = [t.number for t in tickets if _HALTED & t.labels]
+    halted = [t.number for t in live if _HALTED & t.labels]
     if halted:
-        return RunResult(EXIT_INCOMPLETE, f"failed or blocked tickets left for a human: {_numbers(halted)}")
+        return RunResult(EXIT_INCOMPLETE, f"failed or blocked tickets left for a human: {numbers(halted)}")
+    not_started = not_started_reason(tickets)  # e.g. an open sub-issue that never opted in
+    if not_started is not None:
+        return RunResult(EXIT_INCOMPLETE, not_started)
     return RunResult(EXIT_OK, "integrated")

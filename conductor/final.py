@@ -36,13 +36,30 @@ def final_pr_title(prd: Issue) -> str:
     return f"feat: {title}"
 
 
+def numbers(issues: list[int]) -> str:
+    return ", ".join(f"#{n}" for n in sorted(issues))
+
+
+def not_started_reason(tickets: list[Issue]) -> str | None:
+    """Why the final review cannot start, or None when it can. A CLOSED sub-issue (a human's
+    wontfix) is ignored; an OPEN one that is not integrated blocks, even if it never opted in
+    (no ralph label). `run._finish` uses the same rule, so it never promises a review that refuses."""
+    open_tickets = [t for t in tickets if t.state == "open"]
+    if not open_tickets:
+        return "final review not started: no open ticket in the PRD"
+    pending = [t.number for t in open_tickets if labels.INTEGRATED not in t.labels]
+    if pending:
+        return f"final review not started: tickets {numbers(pending)} are not integrated"
+    return None
+
+
 def ensure_draft_pr(config: Config, forge: Forge, integration: str) -> PullRequest:
     """Open the draft final PR once; a resumed run finds and reuses it."""
     existing = forge.find_pr(head=integration, base=config.base_branch)
     if existing is not None:
         return existing
     prd = forge.get_issue(config.prd)
-    closes = [config.prd, *(t.number for t in forge.list_sub_issues(config.prd))]
+    closes = [config.prd, *(t.number for t in forge.list_sub_issues(config.prd) if t.state == "open")]
     body = f"Final PR of PRD #{config.prd}.\n\n" + "\n".join(f"Closes #{n}" for n in closes) + "\n"
     return forge.create_pr(
         head=integration, base=config.base_branch, title=final_pr_title(prd), body=body, draft=True
@@ -114,8 +131,10 @@ def run_final(
     notes: Path | None = None, obs: Observer | None = None,
 ) -> RunResult:
     tickets = forge.list_sub_issues(config.prd)
-    if not tickets or any(labels.INTEGRATED not in t.labels for t in tickets):
-        return RunResult(EXIT_INCOMPLETE, "final review not started: not every ticket is integrated")
+    not_started = not_started_reason(tickets)
+    if not_started is not None:
+        return RunResult(EXIT_INCOMPLETE, not_started)
+    tickets = [t for t in tickets if t.state == "open"]
 
     pr = ensure_draft_pr(config, forge, integration)
     fixes = 0
