@@ -29,6 +29,9 @@ class Config:
     session_timeout: int = 7200
     model: str | None = None
     yolo_allowlist: tuple[str, ...] = ()  # Python regexes, re.search per changed path
+    preflight_command: str = ""
+    preflight_health_url: str = ""
+    preflight_health_retries: int = 30
     # Per-run values, supplied by the CLI (or by tests) through with_run()
     prd: int = 0
     repo_root: Path = Path(".")
@@ -44,7 +47,7 @@ class Config:
         return replace(config, autonomy=autonomy)
 
 
-_INT_KEYS = {"parallel", "gate_fix_rounds", "session_timeout"}
+_INT_KEYS = {"parallel", "gate_fix_rounds", "session_timeout", "preflight_health_retries"}
 
 
 def _parse_allowlist(value: object) -> tuple[str, ...]:
@@ -74,7 +77,7 @@ def parse_config(data: dict[str, object]) -> Config:
                 raise ConfigError(f"{key}: expected a non-negative integer")
         elif not isinstance(value, str):
             raise ConfigError(f"{key}: expected a string")
-    for key in ("parallel", "session_timeout"):
+    for key in ("parallel", "session_timeout", "preflight_health_retries"):
         if kwargs.get(key, 1) < 1:  # type: ignore[operator]
             raise ConfigError(f"{key}: must be >= 1")
     if not _PREFIX.match(str(kwargs.get("branch_prefix", "feat"))):
