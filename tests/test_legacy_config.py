@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from conductor.config import ConfigError, parse_config
-from conductor.legacy_config import MAPPING, load_repo_config
+from conductor.legacy_config import MAPPING, legacy_message, load_repo_config
 
 
 class LegacyConfigTest(unittest.TestCase):
@@ -16,6 +16,12 @@ class LegacyConfigTest(unittest.TestCase):
         for old, new, _ in MAPPING:
             self.assertIn(f"{old} -> {new}", message)
         self.assertIn("RALPH_GATE_AGENT -> reviewer_agent", message)
+
+    def test_doc_files_is_dropped_not_mapped(self) -> None:
+        self.assertNotIn("doc_files", [new for _, new, _ in MAPPING])
+        with self.assertRaises(ConfigError):
+            parse_config({"verify_commands": ["x"], "doc_files": ["README.md"]})
+        self.assertIn("RALPH_DOC_FILES (no counterpart", legacy_message())
 
     def test_toml_wins_when_both_exist(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

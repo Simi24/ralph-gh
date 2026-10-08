@@ -92,6 +92,21 @@ class CliTest(unittest.TestCase):
             self.assertIsNotNone(seen["kwargs"]["env"])
             self.assertIsNotNone(seen["kwargs"]["observer"])
 
+    def test_run_warns_when_the_installed_copy_is_behind_but_still_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".ralph-gh.toml").write_text('verify_commands = ["true"]\n')
+            repo = RepoContext(Path(tmp), "Me/Repo")
+            err = io.StringIO()
+            with (
+                mock.patch.dict("os.environ", {"CLAUDE_CONFIG_DIR": tmp}),
+                mock.patch.object(cli, "find_repo", return_value=repo),
+                mock.patch.object(cli, "drift_warning", return_value="installed copy is behind your clone (a -> b) — run install.sh"),
+                mock.patch.object(cli, "run", return_value=RunResult(0, "integrated")),
+                contextlib.redirect_stderr(err),
+            ):
+                self.assertEqual(cli.main(["run", "--prd", "1"]), 0)
+            self.assertIn("WARNING: installed copy is behind your clone", err.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,7 +12,6 @@ MAPPING: tuple[tuple[str, str, str], ...] = (
     ("RALPH_PREFLIGHT_HEALTH_URL", "preflight_health_url", "string"),
     ("RALPH_PREFLIGHT_HEALTH_RETRIES", "preflight_health_retries", "positive integer"),
     ("RALPH_YOLO_ALLOWLIST", "yolo_allowlist", "regex string"),
-    ("RALPH_DOC_FILES", "doc_files", "bash array -> TOML list of strings"),
     ("RALPH_BRANCH_PREFIX", "branch_prefix", "string"),
     ("RALPH_DEFAULT_BASE_BRANCH", "base_branch", "string"),
     ("RALPH_GATE_FIX_ROUNDS", "gate_fix_rounds", "integer"),
@@ -29,7 +28,7 @@ def legacy_message() -> str:
         f"{LEGACY_FILE} is no longer read; create {CONFIG_FILE} (TOML, plain data) with these keys:",
         *(f"  {old} -> {new}  ({note})" for old, new, note in MAPPING),
         "  new: parallel (integer >= 1, default 3)",
-        "  dropped: --max-iterations (no counterpart)",
+        "  dropped: --max-iterations and RALPH_DOC_FILES (no counterpart; the docs rule lives in AGENTS.md)",
     ]
     return "\n".join(lines)
 
