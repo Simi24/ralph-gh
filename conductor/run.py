@@ -12,6 +12,7 @@ from conductor.config import Config
 from conductor.exploration import ensure_notes
 from conductor.markers import OutcomeKind, Verdict, outcome_of, verdict_of
 from conductor.naming import integration_branch, ticket_branch
+from conductor.observer import NullObserver, Observer
 from conductor.ports import Agents, Blocker, Forge, Git, Issue, SessionRequest
 from conductor.preflight import Environment, preflight
 from conductor.prompts import implementer_prompt, ticket_gate_prompt
@@ -28,7 +29,27 @@ class RunResult:
     reason: str
 
 
-def run(config: Config, forge: Forge, agents: Agents, git: Git, env: Environment | None = None) -> RunResult:
+def run(
+    config: Config,
+    forge: Forge,
+    agents: Agents,
+    git: Git,
+    env: Environment | None = None,
+    observer: Observer | None = None,
+) -> RunResult:
+    obs = observer or NullObserver()  # observability (#64): status comment, run.log, last-run.md
+    forge, agents = obs.wrap(forge, agents)
+    obs.start()
+    try:
+        result = _run(config, forge, agents, git, env, obs)
+    except BaseException as error:
+        obs.finish(f"error ({type(error).__name__})")
+        raise
+    obs.finish(result.reason)
+    return result
+
+
+def _run(config: Config, forge: Forge, agents: Agents, git: Git, env: Environment | None, obs: Observer) -> RunResult:
     if env is not None:  # startup checks: nothing below runs if one fails
         failure = preflight(config, env)
         if failure is not None:
@@ -51,12 +72,13 @@ def run(config: Config, forge: Forge, agents: Agents, git: Git, env: Environment
     integration = integration_branch(config.branch_prefix, config.prd, prd.title)
     git.create_branch(integration, config.base_branch)
     notes = ensure_notes(config, agents)
-    return _work_frontier(config, forge, agents, git, blockers, integration, notes)
+    return _work_frontier(config, forge, agents, git, blockers, integration, notes, obs)
 
 
 def _work_frontier(
     config: Config, forge: Forge, agents: Agents, git: Git, blockers: dict[int, list[Blocker]], integration: str,
     notes: Path | None,
+    obs: Observer,
 ) -> RunResult:
     """Integrate tickets one at a time, always from the current frontier."""
     while True:
@@ -66,7 +88,7 @@ def _work_frontier(
             if any(labels.QUEUED in t.labels for t in tickets):
                 return RunResult(EXIT_INCOMPLETE, "waiting on tickets or issues that are not done")
             return RunResult(EXIT_OK, "integrated")
-        result = _integrate_ticket(config, forge, agents, git, ready[0], integration, notes)
+        result = _integrate_ticket(config, forge, agents, git, ready[0], integration, notes, obs)
         if result.exit_code != EXIT_OK:
             return result
 
@@ -78,7 +100,8 @@ def _fail(forge: Forge, ticket: Issue, label: str, reason: str) -> RunResult:
 
 def _integrate_ticket(
     config: Config, forge: Forge, agents: Agents, git: Git, ticket: Issue, integration: str,
-    notes: Path | None = None,
+    notes: Path | None,
+    obs: Observer,
 ) -> RunResult:
     branch = ticket_branch(config.branch_prefix, config.prd, ticket.number)
     worktree = config.state_root / f"prd-{config.prd}" / "worktrees" / f"ticket-{ticket.number}"
@@ -102,7 +125,9 @@ def _integrate_ticket(
         if outcome.kind is not OutcomeKind.DONE:
             return _fail(forge, ticket, labels.FAILED_ISSUE, f"ticket #{ticket.number}: no usable outcome")
 
-        if not run_verify(config.verify_commands, worktree):
+        with obs.phase(ticket.number, "verify"):
+            verified = run_verify(config.verify_commands, worktree)
+        if not verified:
             return _fail(forge, ticket, labels.FAILED_ISSUE, f"ticket #{ticket.number}: verify failed")
 
         git.push(worktree, branch)

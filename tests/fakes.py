@@ -9,7 +9,7 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import replace
 
-from conductor.ports import Blocker, Issue, PullRequest, SessionRequest, SessionResult
+from conductor.ports import Blocker, Comment, Issue, PullRequest, SessionRequest, SessionResult
 
 Behavior = Callable[[SessionRequest], SessionResult]
 
@@ -22,6 +22,8 @@ class FakeForge:
         self.prs: dict[int, dict[str, str]] = {}
         self.merges: list[tuple[int, str, str]] = []  # (pr, method, head_sha)
         self.label_trail: dict[int, list[frozenset[str]]] = {}
+        self.comments: dict[int, list[tuple[int, str]]] = {}
+        self.comment_seq = 0
 
     def add_sub_issues(self, prd: int, tickets: list[Issue]) -> None:
         for t in tickets:
@@ -52,6 +54,21 @@ class FakeForge:
         self.prs[number]["state"] = "merged"
         self.merges.append((number, method, head_sha))
         return True
+
+    # --- comments (#64) ---
+    def list_comments(self, number: int) -> list[Comment]:
+        return [Comment(i, b) for i, b in self.comments.get(number, [])]
+
+    def create_comment(self, number: int, body: str) -> int:
+        self.comment_seq += 1
+        self.comments.setdefault(number, []).append((self.comment_seq, body))
+        return self.comment_seq
+
+    def update_comment(self, comment_id: int, body: str) -> None:
+        for items in self.comments.values():
+            for index, (i, _) in enumerate(items):
+                if i == comment_id:
+                    items[index] = (i, body)
 
     def ralph_trail(self, number: int) -> list[list[str]]:
         """Distinct ralph:* label sets the issue went through, in order."""
