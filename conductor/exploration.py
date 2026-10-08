@@ -12,6 +12,7 @@ from conductor.config import Config
 from conductor.markers import OutcomeKind, outcome_of
 from conductor.ports import Agents, SessionRequest
 from conductor.prompts import exploration_prompt
+from conductor.usage_limit import UsageLimitHit, describe
 
 log = logging.getLogger("conductor")
 
@@ -41,6 +42,9 @@ def ensure_notes(config: Config, agents: Agents) -> Path | None:
             add_dirs=(path.parent,),
         )
     )
+    if session.usage_limit:  # a pause, not a failed exploration (#62)
+        shutil.rmtree(path.parent, ignore_errors=True)
+        raise UsageLimitHit(describe(session))
     outcome = outcome_of(session)
     if outcome.kind is OutcomeKind.DONE and _has_notes(path):
         return path

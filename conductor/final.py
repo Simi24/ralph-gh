@@ -15,6 +15,7 @@ from conductor.final_prompt import final_review_prompt
 from conductor.markers import Verdict, verdict_of
 from conductor.ports import Agents, Forge, Git, Issue, PullRequest, SessionRequest, SessionResult
 from conductor.result import EXIT_INCOMPLETE, EXIT_OK, RunResult
+from conductor.usage_limit import UsageLimitHit, describe
 from conductor.verdict_comment import verdict_comment
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -100,8 +101,8 @@ def run_final(config: Config, forge: Forge, agents: Agents, git: Git, integratio
         return RunResult(EXIT_INCOMPLETE, "final review not started: reviewed head commit unknown")
 
     result, verdict = _review(config, agents, git, pr, integration, head_sha)
-    if result.usage_limit:
-        return RunResult(EXIT_INCOMPLETE, "usage limit hit during the final review")
+    if result.usage_limit:  # a pause, not a verdict: run() waits or exits (#62)
+        raise UsageLimitHit(describe(result))
     if verdict is Verdict.UNPARSABLE:
         _block_prd(
             config, forge, pr,
