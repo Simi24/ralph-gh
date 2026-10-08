@@ -3,6 +3,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from conductor.config import Config
+from conductor.exploration import notes_path
 from conductor.git_adapter import GitCli
 from conductor.heartbeat import Heartbeat
 from conductor.observer import Observer
@@ -113,12 +114,15 @@ class ObservedRunTest(unittest.TestCase):
         self.config = Config(verify_commands=("true",)).with_run(
             prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root
         )
+        notes = notes_path(self.config)  # exploration is covered in test_exploration.py
+        notes.parent.mkdir(parents=True)
+        notes.write_text("notes")
 
     def observed_run(self, agents: FakeAgents):
         observer = Observer(
             self.forge, prd=PRD, state_root=self.repo.state_root, repo_root=self.repo.checkout, clock=self.clock
         )
-        result = run(self.config, self.forge, agents, GitCli(self.repo.checkout), observer)
+        result = run(self.config, self.forge, agents, GitCli(self.repo.checkout), observer=observer)
         return result
 
     def agents(self, **overrides) -> FakeAgents:

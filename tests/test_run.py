@@ -1,6 +1,7 @@
 import unittest
 
 from conductor.config import Config
+from conductor.exploration import notes_path
 from conductor.git_adapter import GitCli
 from conductor.ports import Issue
 from conductor.run import EXIT_INCOMPLETE, EXIT_OK, run
@@ -20,6 +21,10 @@ class TracerBulletTest(unittest.TestCase):
         self.forge = FakeForge([Issue(PRD, "Python conductor rewrite!")])
         self.forge.add_sub_issues(PRD, [Issue(TICKET, TICKET_TITLE, frozenset({"ralph:queued", "bug"}))])
         self.git = GitCli(self.repo.checkout)
+        # Exploration is covered in test_exploration.py; here the notes already exist.
+        notes = notes_path(self.config())
+        notes.parent.mkdir(parents=True)
+        notes.write_text("notes")
 
     def config(self, verify: str = "test -f feature.txt") -> Config:
         return Config(verify_commands=(verify,)).with_run(
@@ -113,6 +118,9 @@ class TracerBulletTest(unittest.TestCase):
                 config = Config(verify_commands=("true",)).with_run(
                     prd=PRD, repo_root=repo.checkout, state_root=repo.state_root
                 )
+                notes = notes_path(config)
+                notes.parent.mkdir(parents=True)
+                notes.write_text("notes")
                 agents = FakeAgents({"implementer": commits_file("feature.txt"), "ticket-gate": says(text)})
                 result = run(config, forge, agents, GitCli(repo.checkout))
                 self.assertEqual(result.exit_code, EXIT_INCOMPLETE)
