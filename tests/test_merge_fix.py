@@ -75,7 +75,8 @@ class MergeFixTest(unittest.TestCase):
         self.assertEqual(self.roles().count("merge-fix"), 1)
         self.assertEqual(self.roles().count("ticket-gate"), 2)  # gated again after the merge-fix
         self.assertEqual(self.roles().index("merge-fix") + 1, self.roles().index("ticket-gate", self.roles().index("merge-fix")))
-        self.assertEqual(len(self.verify_log.read_text().splitlines()), 2)  # before the first gate, after the merge-fix
+        # before the first gate, after the merge-fix, and on the merge commit of the integration branch
+        self.assertEqual(len(self.verify_log.read_text().splitlines()), 3)
         self.assertEqual(self.forge.get_issue(1).labels & {"ralph:failed:issue"}, frozenset())
         self.assertIn("ralph:integrated", self.forge.get_issue(1).labels)
         # The second merge is pinned to the merged head, which contains the tip.

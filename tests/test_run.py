@@ -21,6 +21,7 @@ class TracerBulletTest(unittest.TestCase):
         self.forge = FakeForge([Issue(PRD, "Python conductor rewrite!")])
         self.forge.add_sub_issues(PRD, [Issue(TICKET, TICKET_TITLE, frozenset({"ralph:queued", "bug"}))])
         self.git = GitCli(self.repo.checkout)
+        self.forge.on_merge = self.repo.merge_branch  # the integration branch gets the merged work, which verify checks
         # Exploration is covered in test_exploration.py; here the notes already exist.
         notes = notes_path(self.config())
         notes.parent.mkdir(parents=True)

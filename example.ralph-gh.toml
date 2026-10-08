@@ -33,7 +33,8 @@ parallel = 3
 # Fix rounds. On a verify failure or a ticket-gate FAIL a fix session runs and
 # the ticket is re-verified and re-gated, at most this many times (verify-fix
 # and gate-fix together), and then labelled ralph:failed:issue. The same number
-# bounds merge-fix attempts per ticket and final-review fix rounds.
+# bounds merge-fix attempts per ticket, final-review fix rounds and the
+# integration-fix rounds after a merge that breaks the integration branch.
 gate_fix_rounds = 2
 
 # Agents (claude --agent), looked up by frontmatter `name:` in the user agents
@@ -53,7 +54,7 @@ session_timeout = 7200
 doc_files = ["README.md"]
 
 # Model for writing sessions (exploration, implementer, fix, merge-fix,
-# final-fix), passed as `claude --model`. Unset by default: claude's own
+# integration-fix, final-fix), passed as `claude --model`. Unset by default: claude's own
 # default. Reviewer sessions never get --model: their agent definition pins it.
 # model = "claude-sonnet-5"
 

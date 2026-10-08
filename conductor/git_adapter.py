@@ -67,6 +67,22 @@ class GitCli:
             raise GitError(f"unexpected sha: {sha!r}")
         return sha
 
+    def remote_sha(self, branch: str) -> str:
+        self._git("fetch", "origin")
+        sha = self._git("rev-parse", "--verify", f"refs/remotes/origin/{branch}^{{commit}}")
+        if not SHA.match(sha):
+            raise GitError(f"unexpected sha: {sha!r}")
+        return sha
+
+    def add_detached_worktree(self, path: Path, sha: str) -> None:
+        if not SHA.match(sha):
+            raise GitError(f"not a full commit sha: {sha!r}")
+        self._git("fetch", "origin")
+        self._git("worktree", "add", "--detach", "--", str(path), sha)
+
+    def remove_detached_worktree(self, path: Path) -> None:
+        self._git("worktree", "remove", "--force", "--", str(path))
+
     def is_ancestor(self, ancestor: str, descendant: str) -> bool:
         """Fail closed: bad shas, a failed fetch or a failed check all mean False."""
         if not (SHA.match(ancestor) and SHA.match(descendant)):

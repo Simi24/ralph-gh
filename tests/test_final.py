@@ -20,6 +20,7 @@ class FinalPrTest(unittest.TestCase):
         self.repo = TempRepo()
         self.addCleanup(self.repo.cleanup)
         self.forge = FakeForge([Issue(PRD, "Final PR PRD")])
+        self.forge.on_merge = self.repo.merge_branch  # the integration branch gets the merged work, which verify checks
         self.set_tickets(frozenset({"ralph:integrated"}))
         self.git = GitCli(self.repo.checkout)
 

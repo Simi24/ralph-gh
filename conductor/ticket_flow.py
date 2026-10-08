@@ -11,7 +11,9 @@ A ticket flow is a generator, so many run at once on one conductor thread
 (conductor/scheduler.py). It yields a `Job` for every step that only runs a
 session or a local command; the scheduler runs jobs in worker threads and
 sends each result back. Everything else (labels, PRs, merges, comments, git)
-happens in the generator body, so only the conductor thread writes.
+happens in the generator body, so only the conductor thread writes. Before a merge the
+flow yields `WAIT_FOR_GREEN`: the scheduler resumes it once the integration branch is
+verified (conductor/integration_check.py).
 A PR that stops merging cleanly goes to a merge-fix session (bounded by its
 own counter, also `gate_fix_rounds`), then is re-verified and gated again: a bad
 resolution could drop code of an integrated ticket. The new gate is told which
@@ -33,6 +35,7 @@ from typing import Any
 from conductor import final, labels
 from conductor.config import Config
 from conductor.findings import blocking_findings, tail
+from conductor.integration_check import WAIT_FOR_GREEN
 from conductor.markers import OutcomeKind, Verdict, outcome_of, usable, verdict_of
 from conductor.naming import ticket_branch
 from conductor.observer import NullObserver, Observer
@@ -119,7 +122,7 @@ def _stop(
 
 
 Job = Callable[[], Any]
-Flow = Generator[Job, Any, TicketResult]
+Flow = Generator[Any, Any, TicketResult]  # yields a Job, or WAIT_FOR_GREEN
 
 
 def _session(agents: Agents, request: SessionRequest) -> Job:
@@ -129,9 +132,11 @@ def _session(agents: Agents, request: SessionRequest) -> Job:
 def integrate_ticket(
     config: Config, forge: Forge, agents: Agents, git: Git, ticket: Issue, integration: str, notes: Path | None,
     obs: Observer | None = None, sessions: SessionRegistry | None = None, resume: PullRequest | None = None,
+    green_sha: str | None = None,
 ) -> Flow:
     """`resume`: the open PR of a ticket an earlier run left in review. It is not claimed or
-    re-implemented: its branch is checked out and goes through verify, gate and merge."""
+    re-implemented: its branch is checked out and goes through verify, gate and merge.
+    `green_sha`: the last integration commit that passed verify; the implementer merges that one."""
     obs = obs or NullObserver()
     branch = ticket_branch(config.branch_prefix, config.prd, ticket.number)
     worktree = prd_dir(config.state_root, config.prd) / "worktrees" / f"ticket-{ticket.number}"
@@ -145,7 +150,7 @@ def integrate_ticket(
         return _stop(forge, git, worktree, branch, ticket, TicketStatus.SYSTEMIC, f"setup failed: {error}", push=False)
     try:
         return (yield from _flow(
-            config, forge, agents, git, ticket, integration, notes, obs, branch, worktree, sessions, resume
+            config, forge, agents, git, ticket, integration, notes, obs, branch, worktree, sessions, resume, green_sha
         ))
     except InfraError as error:  # a git/gh call failed: this ticket ends, the others carry on
         return _stop(forge, git, worktree, branch, ticket, TicketStatus.SYSTEMIC, str(error))
@@ -175,6 +180,7 @@ def _merged_anyway(forge: Forge, pr: PullRequest, branch: str, integration: str)
 def _flow(
     config: Config, forge: Forge, agents: Agents, git: Git, ticket: Issue, integration: str, notes: Path | None,
     obs: Observer, branch: str, worktree: Path, sessions: SessionRegistry | None, resume: PullRequest | None,
+    green_sha: str | None,
 ) -> Flow:
     n = ticket.number
 
@@ -183,7 +189,7 @@ def _flow(
 
     if resume is None:
         session = yield _session(
-            agents, _writer(config, "implementer", implementer_prompt(config, n, integration, notes), worktree, notes)
+            agents, _writer(config, "implementer", implementer_prompt(config, n, integration, notes, green_sha), worktree, notes)
         )
         outcome = outcome_of(session)
         if outcome.kind is OutcomeKind.BLOCKED:
@@ -220,6 +226,7 @@ def _flow(
                     )
                 gated = verdict is Verdict.PASS
             if gated:
+                yield WAIT_FOR_GREEN  # merges are serial and only onto a verified-green integration branch
                 if forge.merge_pr(pr.number, method="merge", head_sha=head_sha) or _merged_anyway(
                     forge, pr, branch, integration
                 ):
