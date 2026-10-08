@@ -5,9 +5,11 @@ Later tickets extend this loop (frontier, parallelism, fix rounds, final PR)
 through the same ports.
 """
 from dataclasses import dataclass
+from pathlib import Path
 
 from conductor import labels
 from conductor.config import Config
+from conductor.exploration import ensure_notes
 from conductor.markers import OutcomeKind, Verdict, outcome_of, verdict_of
 from conductor.naming import integration_branch, ticket_branch
 from conductor.ports import Agents, Forge, Git, Issue, SessionRequest
@@ -33,7 +35,8 @@ def run(config: Config, forge: Forge, agents: Agents, git: Git) -> RunResult:
 
     integration = integration_branch(config.branch_prefix, config.prd, prd.title)
     git.create_branch(integration, config.base_branch)
-    return _integrate_ticket(config, forge, agents, git, queued[0], integration)
+    notes = ensure_notes(config, agents)
+    return _integrate_ticket(config, forge, agents, git, queued[0], integration, notes)
 
 
 def _fail(forge: Forge, ticket: Issue, label: str, reason: str) -> RunResult:
@@ -42,7 +45,8 @@ def _fail(forge: Forge, ticket: Issue, label: str, reason: str) -> RunResult:
 
 
 def _integrate_ticket(
-    config: Config, forge: Forge, agents: Agents, git: Git, ticket: Issue, integration: str
+    config: Config, forge: Forge, agents: Agents, git: Git, ticket: Issue, integration: str,
+    notes: Path | None = None,
 ) -> RunResult:
     branch = ticket_branch(config.branch_prefix, config.prd, ticket.number)
     worktree = config.state_root / f"prd-{config.prd}" / "worktrees" / f"ticket-{ticket.number}"
@@ -53,10 +57,11 @@ def _integrate_ticket(
         session = agents.start(
             SessionRequest(
                 role="implementer",
-                prompt=implementer_prompt(config, ticket.number, integration),
+                prompt=implementer_prompt(config, ticket.number, integration, notes),
                 cwd=worktree,
                 model=config.model,
                 timeout=config.session_timeout,
+                add_dirs=(notes.parent,) if notes else (),
             )
         )
         outcome = outcome_of(session)
