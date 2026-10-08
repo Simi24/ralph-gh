@@ -95,7 +95,7 @@ def _run(
         return stopped
     if frontier.exit_code != EXIT_OK:
         return frontier
-    return final.run_final(config, forge, agents, git, integration)
+    return final.run_final(config, forge, agents, git, integration, notes, obs)
 
 
 def _work_frontier(

@@ -29,8 +29,10 @@ class FinalPrTest(unittest.TestCase):
             [Issue(QUEUED, "queued ticket", frozenset({"ralph:queued"})), Issue(OTHER, "other", other_labels)],
         )
 
-    def go(self, review=None, autonomy="respect-hitl-arch", allowlist=(), gate=None):
-        config = Config(verify_commands=("test -f feature.txt",), yolo_allowlist=allowlist).with_run(
+    def go(self, review=None, autonomy="respect-hitl-arch", allowlist=(), gate=None, rounds=2):
+        config = Config(
+            verify_commands=("test -f feature.txt",), yolo_allowlist=allowlist, gate_fix_rounds=rounds
+        ).with_run(
             prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root, autonomy=autonomy
         )
         notes = notes_path(config)  # exploration is covered in test_exploration.py
@@ -178,7 +180,7 @@ class FinalPrTest(unittest.TestCase):
         self.assertEqual(self.forge.closed, [])
 
     def test_a_failing_review_never_merges_and_flags_the_prd_for_a_human(self) -> None:
-        result = self.go(review=says("### Blocking findings\n- x\nGATE:FAIL"))
+        result = self.go(review=says("### Blocking findings\n- x\nGATE:FAIL"), rounds=0)
         self.assertEqual(result.exit_code, EXIT_INCOMPLETE)
         self.assertEqual(self.final_pr()[1]["state"], "open")
         self.assertIn("ralph:blocked", self.labels(PRD))
