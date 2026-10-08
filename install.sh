@@ -9,12 +9,18 @@ AGENTS="$HOME/.claude/agents"
 
 mkdir -p "$DEST" "$AGENTS"
 
-for f in ralph-gh.sh CLAUDE.md example.ralph-gh.config README.md; do
-  if [[ -f "$DEST/$f" ]] && ! cmp -s "$SRC/$f" "$DEST/$f"; then
+# Each entry is "source-in-repo:installed-name". The iteration prompt lives in
+# prompts/ so Claude Code does not load it as this repo's own CLAUDE.md, but
+# the orchestrator still reads it from $DEST/CLAUDE.md.
+for pair in ralph-gh.sh:ralph-gh.sh prompts/iteration.md:CLAUDE.md \
+            example.ralph-gh.config:example.ralph-gh.config README.md:README.md; do
+  src="${pair%%:*}"
+  f="${pair#*:}"
+  if [[ -f "$DEST/$f" ]] && ! cmp -s "$SRC/$src" "$DEST/$f"; then
     cp "$DEST/$f" "$DEST/$f.bak"
     echo "existing $f differs — backed up to $f.bak"
   fi
-  cp "$SRC/$f" "$DEST/$f"
+  cp "$SRC/$src" "$DEST/$f"
 done
 chmod +x "$DEST/ralph-gh.sh"
 
