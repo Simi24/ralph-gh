@@ -64,7 +64,7 @@ def _run(config: Config, forge: Forge, agents: Agents, git: Git, env: Environmen
     frontier = _work_frontier(config, forge, agents, git, blockers, integration, notes, obs)
     if frontier.exit_code != EXIT_OK:
         return frontier
-    return final.run_final(config, forge, agents, git, integration)
+    return final.run_final(config, forge, agents, git, integration, notes, obs)
 
 
 def _work_frontier(
