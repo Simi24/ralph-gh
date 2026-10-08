@@ -64,8 +64,11 @@ def wait_for_reset(config: Config, sleep: Sleep, interrupted: Callable[[], bool]
     return True
 
 
-def guarded(config: Config, sleep: Sleep, action: Callable[[], T]) -> T:
-    """Run a step outside the frontier; on a usage limit wait and retry, or let `UsageLimitHit` out."""
+def guarded(
+    config: Config, sleep: Sleep, action: Callable[[], T], interrupted: Callable[[], bool] = lambda: False
+) -> T:
+    """Run a step outside the frontier; on a usage limit wait and retry, or let `UsageLimitHit` out
+    (also when `interrupted()` cuts the wait short: a stop request)."""
     while True:
         try:
             return action()
@@ -73,7 +76,8 @@ def guarded(config: Config, sleep: Sleep, action: Callable[[], T]) -> T:
             if not config.wait_for_reset:
                 raise
             log.warning("[usage-limit] waiting %ss (%s) before resuming", config.usage_wait_seconds, hit.description)
-            wait_for_reset(config, sleep)
+            if not wait_for_reset(config, sleep, interrupted):
+                raise
 
 
 def _retry_once(action: Callable[[], None]) -> bool:
@@ -86,8 +90,10 @@ def _retry_once(action: Callable[[], None]) -> bool:
     return False
 
 
-def park_ticket(config: Config, forge: Forge, number: int, integration: str, description: str) -> bool:
-    """Give a ticket back after a usage limit; True if it went back to `ralph:queued`.
+def park_ticket(
+    config: Config, forge: Forge, number: int, integration: str, description: str, cause: str = "hit a usage limit"
+) -> bool:
+    """Give a ticket back after a usage limit or an immediate stop (`cause`); True if it went back to `ralph:queued`.
 
     Without an open PR it is requeued. With one it stays `ralph:in-review`.
     If the PR cannot be read the labels are left alone: guessing wrong is worse."""
@@ -107,7 +113,7 @@ def park_ticket(config: Config, forge: Forge, number: int, integration: str, des
         note = "requeued for retry"
         requeued = True
     _retry_once(
-        lambda: forge.comment(number, f"ralph-gh: ticket #{number} hit a usage limit ({description}), {note} (not a failure).")
+        lambda: forge.comment(number, f"ralph-gh: ticket #{number} {cause} ({description}), {note} (not a failure).")
     )
     log.warning("[usage-limit] ticket #%s: %s (%s), not a failure", number, note, description)
     return requeued

@@ -116,14 +116,14 @@ class FrontierTest(unittest.TestCase):
         result = self.start(
             ticket(1),
             Issue(2, "plain", frozenset({"bug"})),
-            Issue(3, "busy", frozenset({"ralph:in-progress"})),
+            Issue(3, "busy", frozenset({"ralph:blocked"})),  # (in-progress ones are reconciled: test_stop_resume)
             Issue(4, "done", frozenset({"ralph:integrated"})),
         )
         # Leftover tickets are never touched, and they keep the final review from starting.
         self.assertEqual(result.exit_code, EXIT_INCOMPLETE)
         self.assertEqual(self.order(), ["ticket-1"])
         self.assertEqual(self.labels(2), frozenset({"bug"}))
-        self.assertEqual(self.labels(3), frozenset({"ralph:in-progress"}))
+        self.assertEqual(self.labels(3), frozenset({"ralph:blocked"}))
 
     def test_hitl_arch_tickets_come_last_then_ascending_number(self) -> None:
         self.start(ticket(1, "ralph:hitl-arch"), ticket(4), ticket(2), ticket(3, "ralph:hitl-arch"))

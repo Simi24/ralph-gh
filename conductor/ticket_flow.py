@@ -30,6 +30,7 @@ from conductor.naming import ticket_branch
 from conductor.observer import NullObserver, Observer
 from conductor.ports import Agents, Forge, Git, Issue, PullRequest, SessionRequest, SessionResult
 from conductor.prompts import fix_prompt, implementer_prompt, merge_fix_prompt, ticket_gate_prompt
+from conductor.sessions import SessionRegistry
 from conductor.verify import check_verify
 
 log = logging.getLogger("conductor")
@@ -106,45 +107,51 @@ def _session(agents: Agents, request: SessionRequest) -> Job:
 
 def integrate_ticket(
     config: Config, forge: Forge, agents: Agents, git: Git, ticket: Issue, integration: str, notes: Path | None,
-    obs: Observer | None = None,
+    obs: Observer | None = None, sessions: SessionRegistry | None = None, resume: PullRequest | None = None,
 ) -> Flow:
+    """`resume`: the open PR of a ticket an earlier run left in review. It is not claimed or
+    re-implemented: its branch is checked out and goes through verify, gate and merge."""
     obs = obs or NullObserver()
     branch = ticket_branch(config.branch_prefix, config.prd, ticket.number)
     worktree = config.state_root / f"prd-{config.prd}" / "worktrees" / f"ticket-{ticket.number}"
 
-    forge.set_labels(ticket.number, add=(labels.IN_PROGRESS,), remove=(labels.QUEUED,))
-    git.add_worktree(worktree, branch, integration)
+    if resume is None:
+        forge.set_labels(ticket.number, add=(labels.IN_PROGRESS,), remove=(labels.QUEUED,))
+    git.add_worktree(worktree, branch, integration if resume is None else branch)
     try:
-        return (yield from _flow(config, forge, agents, git, ticket, integration, notes, obs, branch, worktree))
+        return (yield from _flow(
+            config, forge, agents, git, ticket, integration, notes, obs, branch, worktree, sessions, resume
+        ))
     finally:
         git.remove_worktree(worktree, branch)  # integrated, failed or blocked
 
 
 def _flow(
     config: Config, forge: Forge, agents: Agents, git: Git, ticket: Issue, integration: str, notes: Path | None,
-    obs: Observer, branch: str, worktree: Path,
+    obs: Observer, branch: str, worktree: Path, sessions: SessionRegistry | None, resume: PullRequest | None,
 ) -> Flow:
     n = ticket.number
 
     def stop(status: TicketStatus, reason: str) -> TicketResult:
         return _stop(forge, git, worktree, branch, ticket, status, reason)
 
-    session = yield _session(
-        agents, _writer(config, "implementer", implementer_prompt(config, n, integration, notes), worktree, notes)
-    )
-    outcome = outcome_of(session)
-    if outcome.kind is OutcomeKind.BLOCKED:
-        return stop(TicketStatus.BLOCKED, outcome.reason or "no reason given")
-    if outcome.kind is not OutcomeKind.DONE:
-        return stop(TicketStatus.FAILED, "the implementer gave no usable outcome")
+    if resume is None:
+        session = yield _session(
+            agents, _writer(config, "implementer", implementer_prompt(config, n, integration, notes), worktree, notes)
+        )
+        outcome = outcome_of(session)
+        if outcome.kind is OutcomeKind.BLOCKED:
+            return stop(TicketStatus.BLOCKED, outcome.reason or "no reason given")
+        if outcome.kind is not OutcomeKind.DONE:
+            return stop(TicketStatus.FAILED, "the implementer gave no usable outcome")
 
-    pr: PullRequest | None = None
+    pr: PullRequest | None = resume
     rounds = 0  # verify-fix and gate-fix rounds together
     merge_rounds = 0  # merge-fix attempts, bounded apart from the rounds above
     gated = False  # the current code has a PASS: only a merge-fix keeps it
     while True:
         with obs.phase(n, "verify"):  # the first run and every re-run after a fix
-            verify = yield lambda: check_verify(config.verify_commands, worktree)
+            verify = yield lambda: check_verify(config.verify_commands, worktree, sessions)
         if verify.ok:
             git.push(worktree, branch)
             head_sha = git.head_sha(worktree)

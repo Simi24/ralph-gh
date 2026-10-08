@@ -4,6 +4,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from conductor.sessions import SessionRegistry
+
 
 @dataclass(frozen=True)
 class VerifyResult:
@@ -11,11 +13,13 @@ class VerifyResult:
     output: str = ""  # combined stdout and stderr of the failing command
 
 
-def check_verify(commands: tuple[str, ...], cwd: Path) -> VerifyResult:
+def check_verify(commands: tuple[str, ...], cwd: Path, sessions: SessionRegistry | None = None) -> VerifyResult:
+    """`sessions`: when given, the commands run in killable process groups (immediate stop)."""
     for command in commands:
-        proc = subprocess.run(
-            command, shell=True, cwd=cwd, capture_output=True, text=True, errors="replace"
-        )
+        if sessions is None:
+            proc = subprocess.run(command, shell=True, cwd=cwd, capture_output=True, text=True, errors="replace")
+        else:
+            proc = sessions.run(command, shell=True, cwd=cwd)
         if proc.returncode != 0:
             return VerifyResult(False, f"$ {command}\n{proc.stdout}{proc.stderr}")
     return VerifyResult(True)

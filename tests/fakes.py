@@ -76,6 +76,13 @@ class FakeForge:
                 return PullRequest(number, head, base)
         return None
 
+    def latest_pr(self, *, head: str, base: str) -> PullRequest | None:
+        found = [n for n, pr in self.prs.items() if (pr["head"], pr["base"]) == (head, base)]
+        if not found:
+            return None
+        number = max(found)
+        return PullRequest(number, head, base, str(self.prs[number]["state"]))
+
     def pr_head_sha(self, number: int) -> str:
         return self.pr_heads.setdefault(number, f"{number:040x}")
 
