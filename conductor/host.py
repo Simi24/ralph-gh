@@ -13,6 +13,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from conductor.sessions import run_detached
+
 HEALTH_TIMEOUT = 5  # seconds per attempt
 
 
@@ -27,7 +29,7 @@ class HostEnvironment:
         self.log_file = log_file
 
     def _run(self, *argv: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(argv, cwd=self.repo_root, capture_output=True, text=True)
+        return run_detached(list(argv), cwd=self.repo_root)  # own session: Ctrl-C-proof
 
     def has_tool(self, name: str) -> bool:
         return shutil.which(name) is not None
@@ -56,14 +58,15 @@ class HostEnvironment:
         return proc.stdout.splitlines()
 
     def fetch_base(self, base: str) -> bool:
-        return self._run("git", "fetch", "origin", base).returncode == 0
+        return self._run("git", "fetch", "--", "origin", base).returncode == 0
 
-    def existing_labels(self) -> set[str]:
-        proc = self._run("gh", "label", "list", "--limit", "500", "--json", "name", "--jq", ".[].name")
-        return set(proc.stdout.split("\n")) if proc.returncode == 0 else set()
+    def existing_labels(self) -> set[str] | None:
+        proc = self._run("gh", "label", "list", "--limit", "1000", "--json", "name", "--jq", ".[].name")
+        return set(proc.stdout.split("\n")) if proc.returncode == 0 else None  # unreadable is not "none"
 
-    def create_label(self, name: str, color: str, description: str) -> None:
-        self._run("gh", "label", "create", name, "--color", color, "--description", description)
+    def create_label(self, name: str, color: str, description: str) -> bool:
+        proc = self._run("gh", "label", "create", name, "--color", color, "--description", description)
+        return proc.returncode == 0 or "already exists" in proc.stderr  # beyond the listing limit
 
     def agent_roots(self) -> list[Path]:
         config_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")

@@ -9,6 +9,8 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
+from conductor.git_adapter import GitError, git_output
+
 STAMP_FILE = ".installed"
 
 
@@ -20,10 +22,9 @@ def install_dir() -> Path:
 def current_sha(clone: Path) -> str:
     """HEAD of `clone`, or "" when it cannot be read."""
     try:
-        proc = subprocess.run(["git", "-C", str(clone), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
+        return git_output("rev-parse", "HEAD", cwd=clone, timeout=10)
+    except (GitError, OSError, subprocess.SubprocessError):
         return ""
-    return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
 def _stamp(path: Path) -> dict[str, str]:

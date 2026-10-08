@@ -14,6 +14,7 @@ from conductor.findings import blocking_findings, tail
 from conductor.markers import OutcomeKind, outcome_of
 from conductor.observer import NullObserver, Observer
 from conductor.ports import Agents, Git, SessionRequest
+from conductor.state_dir import prd_dir
 from conductor.usage_limit import describe
 from conductor.verify import check_verify
 
@@ -32,12 +33,12 @@ class FixRound:
 
 
 def run_fix_round(
-    config: Config, agents: Agents, git: Git, integration: str, notes: Path | None, verdict: str, round: int,
+    config: Config, agents: Agents, git: Git, integration: str, notes: Path | None, verdict: str, round_no: int,
     obs: Observer | None = None,
 ) -> FixRound:
     obs = obs or NullObserver()
     findings, from_section = blocking_findings(verdict)
-    worktree = config.state_root / f"prd-{config.prd}" / "worktrees" / "final-fix"
+    worktree = prd_dir(config.state_root, config.prd) / "worktrees" / "final-fix"
     branch = f"{integration}-final-fix"
     git.add_worktree(worktree, branch, integration)
     try:
@@ -45,7 +46,7 @@ def run_fix_round(
             SessionRequest(
                 role="final-fix",
                 prompt=final_fix_prompt(
-                    config, integration, notes, round=round, findings=findings, from_section=from_section
+                    config, integration, notes, round_no=round_no, findings=findings, from_section=from_section
                 ),
                 cwd=worktree,
                 model=config.model,

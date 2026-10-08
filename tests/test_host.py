@@ -1,9 +1,13 @@
 import http.server
+import os
+import stat
+import tempfile
 import threading
 import unittest
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from unittest import mock
 
 from conductor.host import HostEnvironment
 from tests.gitrepo import TempRepo
@@ -52,6 +56,28 @@ class HostEnvironmentTest(unittest.TestCase):
         self.assertNotEqual(env.run_shell("test -f missing.txt"), 0)
         self.assertTrue(env.fetch_base("main"))
         self.assertFalse(env.fetch_base("no-such-branch"))
+
+    def stub_gh(self, script: str):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        stub = Path(tmp.name) / "gh"
+        stub.write_text(f"#!/bin/sh\n{script}\n")
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+        patch = mock.patch.dict(os.environ, {"PATH": f"{tmp.name}:{os.environ['PATH']}"})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_labels_unreadable_are_none_not_empty(self) -> None:
+        self.stub_gh("echo boom >&2; exit 1")
+        env = HostEnvironment(Path("."))
+        self.assertIsNone(env.existing_labels())
+        self.assertFalse(env.create_label("ralph:x", "000000", "d"))
+
+    def test_labels_are_read_and_an_already_existing_label_counts_as_created(self) -> None:
+        self.stub_gh('if [ "$2" = list ]; then printf "a\\nb\\n"; else echo "label already exists" >&2; exit 1; fi')
+        env = HostEnvironment(Path("."))
+        self.assertEqual(env.existing_labels(), {"a", "b", ""})
+        self.assertTrue(env.create_label("a", "000000", "d"))
 
     def test_agent_roots_include_user_and_repo(self) -> None:
         roots = HostEnvironment(Path("/repo")).agent_roots()

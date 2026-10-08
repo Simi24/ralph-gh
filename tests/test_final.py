@@ -84,6 +84,36 @@ class FinalPrTest(unittest.TestCase):
         self.assertEqual([m[1] for m in self.forge.merges], ["merge"])  # only the ticket merge
         self.assertTrue(self.final_pr()[1]["draft"])
 
+    def test_a_closed_sub_issue_neither_blocks_the_review_nor_gets_a_closes_line(self) -> None:
+        self.forge.add_sub_issues(
+            PRD,
+            [
+                Issue(QUEUED, "queued ticket", frozenset({"ralph:queued"})),
+                Issue(OTHER, "other", frozenset({"ralph:integrated"})),
+                Issue(56, "wontfix", frozenset(), state="closed"),
+            ],
+        )
+        result = self.go(autonomy="halt-each-pr")
+        self.assertEqual(result.exit_code, EXIT_OK)
+        self.assertEqual(self.reviews(), 1)
+        self.assertNotIn("Closes #56", self.final_pr()[1]["body"])
+        self.assertIn(f"Closes #{QUEUED}", self.final_pr()[1]["body"])
+
+    def test_an_open_sub_issue_that_never_opted_in_blocks_the_review_and_is_named(self) -> None:
+        self.forge.add_sub_issues(
+            PRD,
+            [
+                Issue(QUEUED, "queued ticket", frozenset({"ralph:queued"})),
+                Issue(OTHER, "other", frozenset({"ralph:integrated"})),
+                Issue(57, "no ralph label", frozenset({"bug"})),
+                Issue(58, "no label either", frozenset()),
+            ],
+        )
+        result = self.go()
+        self.assertEqual(result.exit_code, EXIT_INCOMPLETE)
+        self.assertEqual(result.reason, "final review not started: tickets #57, #58 are not integrated")
+        self.assertEqual(self.reviews(), 0)
+
     def test_pass_marks_ready_posts_the_verdict_and_merges_squash_pinned_to_the_reviewed_head(self) -> None:
         result = self.go()
         number, pr = self.final_pr()
@@ -146,6 +176,11 @@ class FinalPrTest(unittest.TestCase):
             ("one outside", ["src/a.py", "install.sh"], (r"^src/",), False),
             ("unreadable diff", None, (r"^src/",), False),
             ("empty allowlist", ["src/a.py"], (), False),
+            ("empty diff", [], (r"^src/",), False),
+            ("invalid regex", ["src/a.py"], ("(",), False),
+            ("anchored entry rejects a nested path", ["docs/README.md"], (r"^README\.md$",), False),
+            ("unanchored entry matches anywhere (re.search)", ["docs/README.md"], (r"README\.md",), True),
+            ("one entry per file is enough", ["src/a.py", "README.md"], (r"^src/", r"^README\.md$"), True),
         ]:
             with self.subTest(name):
                 self.tearDown_repo()
@@ -153,6 +188,30 @@ class FinalPrTest(unittest.TestCase):
                 self.forge.final_diff = diff
                 self.go(autonomy="yolo", allowlist=allowlist)
                 self.assertEqual(self.final_pr()[1]["state"] == "merged", merged)
+
+    def test_yolo_never_merges_a_flagged_prd_or_ticket(self) -> None:
+        self.forge.issues[OTHER] = Issue(OTHER, "x", frozenset({"ralph:integrated", "ralph:hitl-arch"}))
+        self.go(autonomy="yolo", allowlist=(r"^README\.md$",))
+        self.assertEqual(self.final_pr()[1]["state"], "open")
+        self.assertIn("ralph:gate-passed", self.labels(PRD))
+
+    def test_unreadable_hitl_labels_withhold_the_merge_in_every_merging_mode(self) -> None:
+        for autonomy in ("respect-hitl-arch", "yolo"):
+            with self.subTest(autonomy):
+                self.tearDown_repo()
+                self.setUp()
+
+                def review(request):
+                    def unreadable(number):
+                        raise RuntimeError("api down")
+
+                    self.forge.get_issue = unreadable  # type: ignore[method-assign]
+                    return says(PASS)(request)
+
+                result = self.go(review=review, autonomy=autonomy, allowlist=(r"^README\.md$",))
+                self.assertEqual(result.exit_code, EXIT_OK)
+                self.assertEqual(self.final_pr()[1]["state"], "open")
+                self.assertIn("ralph:gate-passed", self.forge.issues[PRD].labels)
 
     def test_a_head_that_moved_after_the_review_is_never_merged(self) -> None:
         def review(request):

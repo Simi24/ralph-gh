@@ -6,6 +6,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from conductor.ports import InfraError
+from conductor.sessions import run_detached
+
 PAGE_SIZE = 100
 MAX_PAGES = 100  # a safety stop, 10 000 items
 
@@ -13,7 +16,7 @@ MAX_PAGES = 100  # a safety stop, 10 000 items
 Runner = Callable[[list[str]], "subprocess.CompletedProcess[str]"]
 
 
-class GhError(Exception):
+class GhError(InfraError):
     pass
 
 
@@ -21,9 +24,7 @@ def subprocess_runner(cwd: Path) -> Runner:
     env = {**os.environ, "GH_PROMPT_DISABLED": "1", "NO_COLOR": "1"}
 
     def run(args: list[str]) -> "subprocess.CompletedProcess[str]":
-        return subprocess.run(
-            ["gh", *args], cwd=cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace"
-        )
+        return run_detached(["gh", *args], cwd=cwd, env=env, stdin=subprocess.DEVNULL)  # own session: Ctrl-C-proof
 
     return run
 

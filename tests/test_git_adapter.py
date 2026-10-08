@@ -1,6 +1,11 @@
+import os
+import stat
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
-from conductor.git_adapter import GitCli
+from conductor.git_adapter import GitCli, GitError, git_output
 from tests.gitrepo import TempRepo
 
 
@@ -35,6 +40,25 @@ class GitCliTest(unittest.TestCase):
         self.assertFalse(self.cli.is_ancestor("main", head))
         self.assertFalse(self.cli.is_ancestor(head, "HEAD; rm -rf /"))
         self.assertFalse(self.cli.is_ancestor(head, "0" * 40))  # not fetchable
+
+    def test_delete_remote_branch_deletes_and_tolerates_a_missing_branch(self) -> None:
+        self.repo.git("push", "origin", "HEAD:refs/heads/doomed")
+        self.cli.delete_remote_branch("doomed")
+        self.assertEqual(self.repo.git("ls-remote", "--heads", "origin", "doomed"), "")
+        self.cli.delete_remote_branch("doomed")  # already gone: not an error
+
+    def test_a_branch_name_that_looks_like_an_option_is_data(self) -> None:
+        with self.assertRaises(GitError):
+            self.cli.add_worktree(self.repo.root / "wt", "work", "--upload-pack=x")
+
+    def test_git_runs_in_its_own_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            stub = Path(tmp) / "git"
+            stub.write_text("#!/bin/sh\nps -o pgid= -p $$\n")
+            stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+            with mock.patch.dict(os.environ, {"PATH": f"{tmp}:{os.environ['PATH']}"}):
+                group = int(git_output("status", cwd=self.repo.checkout))
+        self.assertNotEqual(group, os.getpgrp())
 
 
 if __name__ == "__main__":

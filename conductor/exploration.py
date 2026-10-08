@@ -12,13 +12,14 @@ from conductor.config import Config
 from conductor.markers import OutcomeKind, outcome_of
 from conductor.ports import Agents, SessionRequest
 from conductor.prompts import exploration_prompt
+from conductor.state_dir import prd_dir
 from conductor.usage_limit import UsageLimitHit, describe
 
 log = logging.getLogger("conductor")
 
 
 def notes_path(config: Config) -> Path:
-    return config.state_root / f"prd-{config.prd}" / "notes" / "exploration.md"
+    return prd_dir(config.state_root, config.prd) / "notes" / "exploration.md"
 
 
 def _has_notes(path: Path) -> bool:

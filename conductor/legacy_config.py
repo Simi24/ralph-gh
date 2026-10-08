@@ -19,6 +19,7 @@ MAPPING: tuple[tuple[str, str, str], ...] = (
     ("RALPH_SESSION_TIMEOUT", "session_timeout", "integer, seconds"),
     ("RALPH_WAIT_FOR_RESET", "wait_for_reset", "0/1 -> false/true"),
     ("RALPH_USAGE_WAIT_SECONDS", "usage_wait_seconds", "positive integer"),
+    ("RALPH_DOC_FILES", "doc_files", "bash array -> TOML list of paths"),
     ("export ANTHROPIC_MODEL=...", "model", "string"),
 )
 
@@ -28,7 +29,7 @@ def legacy_message() -> str:
         f"{LEGACY_FILE} is no longer read; create {CONFIG_FILE} (TOML, plain data) with these keys:",
         *(f"  {old} -> {new}  ({note})" for old, new, note in MAPPING),
         "  new: parallel (integer >= 1, default 3)",
-        "  dropped: --max-iterations and RALPH_DOC_FILES (no counterpart; the docs rule lives in AGENTS.md)",
+        "  dropped: --max-iterations (no counterpart: a run is one PRD)",
     ]
     return "\n".join(lines)
 

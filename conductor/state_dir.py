@@ -22,3 +22,8 @@ def default_state_root(repo: str, environ: Mapping[str, str] | None = None, home
         raise ValueError(f"not an owner/name repository: {repo!r}")
     owner, name = found.groups()
     return claude_config_dir(environ, home) / "ralph-gh" / "state" / f"{owner}__{name}"
+
+
+def prd_dir(state_root: Path, prd: int) -> Path:
+    """Everything one PRD's run keeps (worktrees, notes, saved verdicts): the one place the name is built."""
+    return state_root / f"prd-{prd}"

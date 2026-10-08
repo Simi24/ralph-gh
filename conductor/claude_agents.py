@@ -9,13 +9,12 @@
   writing sessions get `--model` when one is set.
 """
 import logging
-import os
 import signal
 import subprocess
 
 from conductor.claude_output import parse_session
 from conductor.ports import SessionRequest, SessionResult
-from conductor.sessions import SessionRegistry
+from conductor.sessions import SessionRegistry, kill_group
 
 log = logging.getLogger("conductor")
 
@@ -64,16 +63,9 @@ class ClaudeAgents:
 
     def _kill(self, proc: "subprocess.Popen[str]") -> tuple[str, str]:
         """SIGTERM the process group, wait the grace period, SIGKILL it, reap."""
-        self._signal(proc.pid, signal.SIGTERM)
+        kill_group(proc.pid, signal.SIGTERM)
         try:
             return proc.communicate(timeout=self._kill_grace)
         except subprocess.TimeoutExpired:
-            self._signal(proc.pid, signal.SIGKILL)
+            kill_group(proc.pid, signal.SIGKILL)
             return proc.communicate()
-
-    @staticmethod
-    def _signal(pgid: int, signum: int) -> None:
-        try:
-            os.killpg(pgid, signum)
-        except (ProcessLookupError, PermissionError):
-            pass  # already gone

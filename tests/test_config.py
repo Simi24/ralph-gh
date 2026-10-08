@@ -34,6 +34,28 @@ class LoadConfigTest(unittest.TestCase):
             with self.subTest(name), self.assertRaises(ConfigError):
                 self.load(toml)
 
+    def test_ref_like_values_are_data_never_options(self) -> None:
+        for key, bad in [
+            ("base_branch", "--upload-pack=x"),
+            ("base_branch", "main..evil"),
+            ("base_branch", "ma in"),
+            ("base_branch", "main;rm"),
+            ("branch_prefix", "-feat"),
+            ("reviewer_agent", "--dangerous"),
+            ("ticket_gate_agent", "-x"),
+            ("model", "--help"),
+            ("model", "a b"),
+        ]:
+            with self.subTest(key=key, bad=bad), self.assertRaisesRegex(ConfigError, key):
+                self.load(f'verify_commands = ["x"]\n{key} = "{bad}"')
+
+    def test_real_refs_agents_and_models_are_accepted(self) -> None:
+        config = self.load(
+            'verify_commands = ["x"]\nbase_branch = "release/1.2_x"\nmodel = "claude-opus-4[1m]"\n'
+            'reviewer_agent = "plugin:reviewer"'
+        )
+        self.assertEqual((config.base_branch, config.model), ("release/1.2_x", "claude-opus-4[1m]"))
+
     def test_yolo_allowlist_is_a_list_of_regexes_and_empty_by_default(self) -> None:
         self.assertEqual(self.load('verify_commands = ["x"]').yolo_allowlist, ())
         config = self.load('verify_commands = ["x"]\nyolo_allowlist = ["^src/", "^README\\\\.md$"]')

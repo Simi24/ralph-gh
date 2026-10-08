@@ -1,15 +1,20 @@
 """The conductor entry point: `run(config, forge, agents, git)`.
 
-Tracer bullet: one queued ticket from claim to merged-into-integration.
-Later tickets extend this loop (frontier, parallelism, fix rounds, final PR)
-through the same ports.
+Takes the per-repo run lock, then in order: preflight (when an `env` is given),
+reads the PRD board and refuses a missing, cyclic or unreadable one, reconciles
+leftover labels with their PRs (a resumed run starts from the real board), creates
+the integration branch and the exploration notes, drives the frontier
+(scheduler.py: up to `parallel` ticket flows at once), and, when every open
+ticket is integrated, runs the final review and merge (final.py). Stop requests
+(stopping.py) and usage limits (usage_limit.py) end the run early without
+failing any ticket. The result carries the exit code and the reason line.
 """
 import time
-from pathlib import Path
 
 from conductor import final, graph, labels, reconcile
 from conductor.config import Config
 from conductor.exploration import ensure_notes
+from conductor.final import not_started_reason, numbers
 from conductor.lock import RunLock
 from conductor.naming import integration_branch
 from conductor.observer import NullObserver, Observer
@@ -21,7 +26,8 @@ from conductor.sessions import Stopped
 from conductor.stopping import STOP_FILE, StopAwareAgents, StopState
 from conductor.usage_limit import Sleep, UsageLimitHit, exit_reason, guarded
 
-_HALTED = frozenset({labels.FAILED_ISSUE, labels.BLOCKED})
+_HALTED = frozenset({labels.FAILED_ISSUE, labels.FAILED_SYSTEMIC, labels.BLOCKED})
+
 
 def run(
     config: Config,
@@ -95,7 +101,8 @@ def _run(
 
     git.create_branch(integration, config.base_branch)
     notes = guarded(config, sleep, lambda: ensure_notes(config, agents), stop.should_stop)
-    frontier = _work_frontier(config, forge, agents, git, blockers, integration, notes, obs, stop, sleep)
+    work_frontier(config, forge, agents, git, blockers, integration, notes, obs, stop, sleep)
+    frontier = _finish(forge.list_sub_issues(config.prd), blockers)  # a failed or blocked ticket is left for a human
     stop.poll_file()  # a STOP file dropped during the last ticket
     stopped = stop.result()
     if stopped is not None:  # the board is left for a later run; no final PR work after a stop
@@ -105,23 +112,6 @@ def _run(
     return guarded(config, sleep, lambda: final.run_final(config, forge, agents, git, integration, notes, obs), stop.should_stop)
 
 
-def _work_frontier(
-    config: Config, forge: Forge, agents: Agents, git: Git, blockers: dict[int, list[Blocker]], integration: str,
-    notes: Path | None,
-    obs: Observer, stop: StopState, sleep: Sleep,
-) -> RunResult:
-    """Integrate tickets, up to `parallel` at a time, always from the current frontier.
-
-    A failed or blocked ticket is left for a human; the loop carries on with
-    whatever does not depend on it."""
-    work_frontier(config, forge, agents, git, blockers, integration, notes, obs, stop, sleep)
-    return _finish(forge.list_sub_issues(config.prd), blockers)
-
-
-def _numbers(numbers: list[int]) -> str:
-    return ", ".join(f"#{n}" for n in sorted(numbers))
-
-
 def _finish(tickets: list[Issue], blockers: dict[int, list[Blocker]]) -> RunResult:
     """Why the frontier is empty: cascade, waiting, failures left, or done."""
     cascade = graph.halted_blockers(tickets, blockers, _HALTED)
@@ -129,11 +119,15 @@ def _finish(tickets: list[Issue], blockers: dict[int, list[Blocker]]) -> RunResu
         blocking = sorted({n for found in cascade.values() for n in found})
         return RunResult(
             EXIT_INCOMPLETE,
-            f"cascade: tickets {_numbers(list(cascade))} depend on failed or blocked {_numbers(blocking)}",
+            f"cascade: tickets {numbers(list(cascade))} depend on failed or blocked {numbers(blocking)}",
         )
-    if any(labels.QUEUED in t.labels for t in tickets):
+    live = [t for t in tickets if t.state == "open"]  # a closed sub-issue is a human's call: ignored
+    if any(labels.QUEUED in t.labels for t in live):
         return RunResult(EXIT_INCOMPLETE, "waiting on tickets or issues that are not done")
-    halted = [t.number for t in tickets if _HALTED & t.labels]
+    halted = [t.number for t in live if _HALTED & t.labels]
     if halted:
-        return RunResult(EXIT_INCOMPLETE, f"failed or blocked tickets left for a human: {_numbers(halted)}")
+        return RunResult(EXIT_INCOMPLETE, f"failed or blocked tickets left for a human: {numbers(halted)}")
+    not_started = not_started_reason(tickets)  # e.g. an open sub-issue that never opted in
+    if not_started is not None:
+        return RunResult(EXIT_INCOMPLETE, not_started)
     return RunResult(EXIT_OK, "integrated")

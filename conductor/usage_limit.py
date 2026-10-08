@@ -15,6 +15,7 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 from conductor import labels
+from conductor.attempt import attempt
 from conductor.config import Config
 from conductor.naming import ticket_branch
 from conductor.ports import Forge, SessionResult
@@ -80,16 +81,6 @@ def guarded(
                 raise
 
 
-def _retry_once(action: Callable[[], None]) -> bool:
-    for _ in range(2):
-        try:
-            action()
-            return True
-        except Exception:  # noqa: BLE001
-            continue
-    return False
-
-
 def park_ticket(
     config: Config, forge: Forge, number: int, integration: str, description: str, cause: str = "hit a usage limit"
 ) -> bool:
@@ -103,16 +94,16 @@ def park_ticket(
         log.warning("[usage-limit] ticket #%s: cannot tell whether a PR is open (%s); labels left as they are", number, error)
         return False
     if pr is not None:
-        _retry_once(lambda: forge.set_labels(number, add=(labels.IN_REVIEW,), remove=(labels.IN_PROGRESS,)))
+        attempt(lambda: forge.set_labels(number, add=(labels.IN_REVIEW,), remove=(labels.IN_PROGRESS,)))
         note = f"PR #{pr.number} stays {labels.IN_REVIEW}"
         requeued = False
     else:
-        _retry_once(
+        attempt(
             lambda: forge.set_labels(number, add=(labels.QUEUED,), remove=(labels.IN_PROGRESS, labels.IN_REVIEW))
         )
         note = "requeued for retry"
         requeued = True
-    _retry_once(
+    attempt(
         lambda: forge.comment(number, f"ralph-gh: ticket #{number} {cause} ({description}), {note} (not a failure).")
     )
     log.warning("[usage-limit] ticket #%s: %s (%s), not a failure", number, note, description)

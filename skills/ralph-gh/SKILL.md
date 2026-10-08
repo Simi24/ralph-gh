@@ -24,7 +24,7 @@ state="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/ralph-gh/state/$(gh repo view --json 
 cat "$state/last-run.md"
 ```
 
-   Also tell the user the exit code (0 done or withheld by autonomy or stopped by the operator, 1 startup or config error, 3 the run ended incomplete) and that the PRD carries a single `## ralph-gh status` comment, edited in place, with the phase timeline of the whole run — the place to look if something seems stalled. The final review's verdicts are `## Gate verdict` comments on the final PR.
+   Also tell the user the exit code (0 done or withheld by autonomy or stopped by the operator, 1 startup or config error, 2 CLI usage error, 3 the run ended incomplete, 129 killed by SIGHUP) and that the PRD carries a single `## ralph-gh status` comment, edited in place, with the phase timeline of the whole run — the place to look if something seems stalled. The final review's verdicts are `## Gate verdict` comments on the final PR.
 
 ## Arguments
 

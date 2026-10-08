@@ -8,6 +8,8 @@ from pathlib import Path
 CONFIG_FILE = ".ralph-gh.toml"
 _PREFIX = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _AGENT = re.compile(r"^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$")
+_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
+_MODEL = re.compile(r"^[A-Za-z0-9._/:\[\]-]+$")  # model ids carry ':' and '[1m]'
 AUTONOMY_MODES = ("halt-each-pr", "respect-hitl-arch", "yolo")
 _RUN_FIELDS = {"prd", "repo_root", "state_root", "autonomy"}
 
@@ -29,6 +31,7 @@ class Config:
     session_timeout: int = 7200
     model: str | None = None
     yolo_allowlist: tuple[str, ...] = ()  # Python regexes, re.search per changed path
+    doc_files: tuple[str, ...] = ()  # docs that must stay in sync with behavior (prompt pointers only)
     preflight_command: str = ""
     preflight_health_url: str = ""
     preflight_health_retries: int = 30
@@ -53,6 +56,12 @@ _INT_KEYS = {"parallel", "gate_fix_rounds", "session_timeout", "preflight_health
 _BOOL_KEYS = {"wait_for_reset"}
 
 
+def _check_token(key: str, value: str, pattern: "re.Pattern[str]", what: str) -> None:
+    """Config values reach git and claude argv lists: never an option, never `..`."""
+    if not pattern.match(value) or value.startswith("-") or ".." in value:
+        raise ConfigError(f"{key}: not a safe {what} (no leading '-', no '..', no spaces): {value!r}")
+
+
 def _parse_allowlist(value: object) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(isinstance(p, str) and p for p in value):
         raise ConfigError("yolo_allowlist: expected a list of non-empty regex strings")
@@ -64,6 +73,12 @@ def _parse_allowlist(value: object) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _parse_doc_files(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(p, str) and p and "\n" not in p for p in value):
+        raise ConfigError("doc_files: expected a list of non-empty path strings")
+    return tuple(value)
+
+
 def parse_config(data: dict[str, object]) -> Config:
     known = {f.name for f in fields(Config)} - _RUN_FIELDS
     unknown = sorted(set(data) - known)
@@ -72,8 +87,9 @@ def parse_config(data: dict[str, object]) -> Config:
     commands = data.get("verify_commands")
     if not isinstance(commands, list) or not commands or not all(isinstance(c, str) and c for c in commands):
         raise ConfigError("verify_commands: required non-empty list of strings")
-    kwargs = {k: v for k, v in data.items() if k not in ("verify_commands", "yolo_allowlist")}
+    kwargs = {k: v for k, v in data.items() if k not in ("verify_commands", "yolo_allowlist", "doc_files")}
     allowlist = _parse_allowlist(data.get("yolo_allowlist", []))
+    doc_files = _parse_doc_files(data.get("doc_files", []))
     for key, value in kwargs.items():
         if key in _BOOL_KEYS:
             if not isinstance(value, bool):
@@ -86,12 +102,16 @@ def parse_config(data: dict[str, object]) -> Config:
     for key in ("parallel", "session_timeout", "preflight_health_retries", "usage_wait_seconds"):
         if kwargs.get(key, 1) < 1:  # type: ignore[operator]
             raise ConfigError(f"{key}: must be >= 1")
+    _check_token("branch_prefix", str(kwargs.get("branch_prefix", "feat")), _REF, "ref")
     if not _PREFIX.match(str(kwargs.get("branch_prefix", "feat"))):
         raise ConfigError("branch_prefix: only [a-z0-9-]")
+    _check_token("base_branch", str(kwargs.get("base_branch", "main")), _REF, "ref")
     for key in ("reviewer_agent", "ticket_gate_agent"):
-        if key in kwargs and not _AGENT.match(str(kwargs[key])):
-            raise ConfigError(f"{key}: invalid agent name")
-    return Config(verify_commands=tuple(commands), yolo_allowlist=allowlist, **kwargs)  # type: ignore[arg-type]
+        if key in kwargs:
+            _check_token(key, str(kwargs[key]), _AGENT, "agent name")
+    if "model" in kwargs:
+        _check_token("model", str(kwargs["model"]), _MODEL, "model id")
+    return Config(verify_commands=tuple(commands), yolo_allowlist=allowlist, doc_files=doc_files, **kwargs)  # type: ignore[arg-type]
 
 
 def load_config(path: Path) -> Config:

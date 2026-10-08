@@ -5,12 +5,31 @@ from pathlib import Path
 from conductor.config import Config
 
 
+OUTCOME_FOOTER = """Finish with exactly one last line, plain text:
+RALPH:DONE
+or
+RALPH:BLOCKED <short reason>
+"""
+
+
+def verify_list(config: Config) -> str:
+    """The verify commands as a bullet list, for every prompt that names them."""
+    return "\n".join(f"- `{c}`" for c in config.verify_commands)
+
+
 def notes_pointer(notes: Path | None) -> str:
     """One line pointing at the exploration notes; empty when there are none.
     Used by every implementer and fix prompt. Never the notes' content."""
     if notes is None:
         return ""
     return f"Read the shared exploration notes first: {notes}\n"
+
+
+def docs_pointer(config: Config) -> str:
+    """One line naming the docs to keep in sync; empty when none are configured. Never their content."""
+    if not config.doc_files:
+        return ""
+    return f"Docs that must stay in sync with behavior: {', '.join(config.doc_files)}\n"
 
 
 def exploration_prompt(config: Config, notes: Path) -> str:
@@ -24,35 +43,26 @@ fixtures an implementer must reuse, and the traps to avoid.
 Write your notes to `{notes}` (outside the repo; do not write inside the repo).
 Keep them short and factual: file paths and what lives there.
 
-Finish with exactly one last line, plain text:
-RALPH:DONE
-or
-RALPH:BLOCKED <short reason>
-"""
+{OUTCOME_FOOTER}"""
 
 
 def implementer_prompt(config: Config, ticket: int, integration: str, notes: Path | None = None) -> str:
-    verify = "\n".join(f"- `{c}`" for c in config.verify_commands)
     return f"""You are implementing ticket #{ticket} of PRD #{config.prd}.
 
 Read them yourself: `gh issue view {ticket}` and `gh issue view {config.prd}`.
 Your worktree is your current directory, based on branch `{integration}`.
 {notes_pointer(notes)}
 Build the ticket with the `tdd` skill, test-first, and commit your work.
-Before reporting done, merge `origin/{integration}` into your branch.
+{docs_pointer(config)}Before reporting done, merge `origin/{integration}` into your branch.
 
 Verify commands (the conductor re-runs them itself):
-{verify}
+{verify_list(config)}
 
 Rules: no dependency-manifest changes unless an acceptance criterion asks for
 one, no force-push, no `--no-verify`. The repo's AGENTS.md overrides your
 default development method.
 
-Finish with exactly one last line, plain text:
-RALPH:DONE
-or
-RALPH:BLOCKED <short reason>
-"""
+{OUTCOME_FOOTER}"""
 
 
 def ticket_gate_prompt(config: Config, ticket: int, integration: str) -> str:
@@ -72,7 +82,6 @@ GATE:FAIL
 
 def merge_fix_prompt(config: Config, ticket: int, integration: str, notes: Path | None) -> str:
     """Merge-fix session: the ticket PR no longer merges cleanly into the integration branch."""
-    verify = "\n".join(f"- `{c}`" for c in config.verify_commands)
     return f"""You are a MERGE-FIX session for ticket #{ticket} of PRD #{config.prd}.
 The ticket PR no longer merges cleanly: `{integration}` moved while the ticket
 was in review.
@@ -84,15 +93,11 @@ Resolve every conflict keeping the intent of both sides, and commit the merge.
 Change nothing else.
 
 Verify commands (the conductor re-runs them itself):
-{verify}
+{verify_list(config)}
 
 Rules: no force-push, no `--no-verify`, do not touch labels, do not merge the PR.
 
-Finish with exactly one last line, plain text:
-RALPH:DONE
-or
-RALPH:BLOCKED <short reason>
-"""
+{OUTCOME_FOOTER}"""
 
 
 def fix_prompt(
@@ -100,7 +105,6 @@ def fix_prompt(
 ) -> str:
     """Fix session for a ticket. `reason` is "verify" or "gate"; `context` is the
     failing verify output or the gate's BLOCKING findings (authoritative copy)."""
-    verify = "\n".join(f"- `{c}`" for c in config.verify_commands)
     if reason == "verify":
         what = "The conductor's verify commands FAILED on your branch. The failing output is quoted below."
         scope = "Fix whatever makes the verify commands fail."
@@ -123,18 +127,14 @@ Read the ticket yourself: `gh issue view {ticket}`.
 Your worktree is your current directory, on the ticket branch based on `{integration}`.
 {notes_pointer(notes)}
 {scope}
-
+{docs_pointer(config)}
 Verify commands (the conductor re-runs them itself):
-{verify}
+{verify_list(config)}
 
 Rules: no dependency-manifest changes, no force-push, no `--no-verify`, do not
 touch labels, do not merge. Commit your fix.
 
-Finish with exactly one last line, plain text:
-RALPH:DONE
-or
-RALPH:BLOCKED <short reason>
-
+{OUTCOME_FOOTER}
 {heading}
 {context}
 """

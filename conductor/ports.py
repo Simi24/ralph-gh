@@ -4,9 +4,16 @@ Production adapters wrap `gh`, `claude` and `git`; tests use in-memory fakes
 (tests/fakes.py) for Forge and Agents and the real Git adapter on a temp repo.
 Extend these ports instead of bypassing them.
 """
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+
+SHA = re.compile(r"^[0-9a-f]{40}$")  # the one definition: every sha is checked against it
+
+
+class InfraError(Exception):
+    """A `git` or `gh` call failed (not the ticket's fault). GitError and GhError are subclasses."""
 
 
 @dataclass(frozen=True)
@@ -131,6 +138,10 @@ class Git(Protocol):
 
     def push(self, path: Path, branch: str) -> None: ...
     def head_sha(self, path: Path) -> str: ...
+    def delete_remote_branch(self, branch: str) -> None:
+        """Delete `branch` on origin. Raise when it cannot be deleted."""
+        ...
+
     def is_ancestor(self, ancestor: str, descendant: str) -> bool:
         """True only when both are 40-hex shas, `descendant` could be fetched and `ancestor`
         is in its history. Any doubt or error is False."""

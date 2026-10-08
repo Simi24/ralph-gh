@@ -1,17 +1,26 @@
 """Real Git adapter: argv-list subprocess calls against the repo checkout.
 
 The checkout itself is never modified: branches are created on origin and
-worktrees are added elsewhere.
+worktrees are added elsewhere. Every call runs in its own session (Ctrl-C
+must not kill a push halfway), and refs go after `--` or in a full refspec.
 """
-import re
-import subprocess
 from pathlib import Path
 
-_SHA = re.compile(r"^[0-9a-f]{40}$")
+from conductor.ports import SHA, InfraError
+from conductor.sessions import run_detached
 
 
-class GitError(Exception):
+class GitError(InfraError):
     pass
+
+
+def git_output(*args: str, cwd: Path, timeout: float | None = None) -> str:
+    """Stdout of `git <args>` in `cwd`; a non-zero exit raises GitError. Every `git` call
+    of the conductor goes through here (or `GitCli`), never through a bare `subprocess`."""
+    proc = run_detached(["git", *args], cwd=cwd, timeout=timeout)
+    if proc.returncode != 0:
+        raise GitError(f"git {' '.join(args)}: {proc.stderr.strip()}")
+    return proc.stdout.strip()
 
 
 class GitCli:
@@ -19,30 +28,25 @@ class GitCli:
         self.repo_root = repo_root
 
     def _git(self, *args: str, cwd: Path | None = None) -> str:
-        proc = subprocess.run(["git", *args], cwd=cwd or self.repo_root, capture_output=True, text=True)
-        if proc.returncode != 0:
-            raise GitError(f"git {' '.join(args)}: {proc.stderr.strip()}")
-        return proc.stdout.strip()
+        return git_output(*args, cwd=cwd or self.repo_root)
 
     def create_branch(self, branch: str, base: str) -> None:
         self._git("fetch", "origin")
-        if self._git("ls-remote", "--heads", "origin", branch):
+        if self._git("ls-remote", "--heads", "origin", "--", branch):
             return  # resume: reuse the existing integration branch
         self._git("push", "origin", f"refs/remotes/origin/{base}:refs/heads/{branch}")
 
     def add_worktree(self, path: Path, branch: str, start: str) -> None:
         self._git("fetch", "origin")
-        self._git("worktree", "add", "-B", branch, str(path), f"origin/{start}")
+        self._git("worktree", "add", "-B", branch, "--", str(path), f"origin/{start}")
 
     def remove_worktree(self, path: Path, branch: str) -> None:
-        self._git("worktree", "remove", "--force", str(path))
-        self._git("branch", "-D", branch)
+        self._git("worktree", "remove", "--force", "--", str(path))
+        self._git("branch", "-D", "--", branch)
 
     def is_behind(self, path: Path, base: str) -> bool:
         self._git("fetch", "origin", cwd=path)
-        proc = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", f"origin/{base}", "HEAD"], cwd=path, capture_output=True, text=True
-        )
+        proc = run_detached(["git", "merge-base", "--is-ancestor", f"origin/{base}", "HEAD"], cwd=path)
         if proc.returncode == 0:
             return False
         if proc.returncode == 1:
@@ -50,17 +54,22 @@ class GitCli:
         raise GitError(f"git merge-base: {proc.stderr.strip()}")
 
     def push(self, path: Path, branch: str) -> None:
-        self._git("push", "origin", f"HEAD:refs/heads/{branch}", cwd=path)
+        self._git("push", "origin", f"HEAD:refs/heads/{branch}", cwd=path)  # never forced
+
+    def delete_remote_branch(self, branch: str) -> None:
+        self._git("fetch", "origin")
+        if self._git("ls-remote", "--heads", "origin", "--", branch):  # already gone is fine
+            self._git("push", "origin", f":refs/heads/{branch}")
 
     def head_sha(self, path: Path) -> str:
         sha = self._git("rev-parse", "HEAD", cwd=path)
-        if not _SHA.match(sha):
+        if not SHA.match(sha):
             raise GitError(f"unexpected sha: {sha!r}")
         return sha
 
     def is_ancestor(self, ancestor: str, descendant: str) -> bool:
         """Fail closed: bad shas, a failed fetch or a failed check all mean False."""
-        if not (_SHA.match(ancestor) and _SHA.match(descendant)):
+        if not (SHA.match(ancestor) and SHA.match(descendant)):
             return False
         try:
             self._git("fetch", "origin", descendant)  # by sha: brings its ancestry along
