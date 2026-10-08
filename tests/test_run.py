@@ -23,7 +23,7 @@ class TracerBulletTest(unittest.TestCase):
 
     def config(self, verify: str = "test -f feature.txt") -> Config:
         return Config(verify_commands=(verify,)).with_run(
-            prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root
+            prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root, autonomy="halt-each-pr"
         )
 
     def agents(self, implementer=None, gate=None) -> FakeAgents:
@@ -31,6 +31,7 @@ class TracerBulletTest(unittest.TestCase):
             {
                 "implementer": implementer or commits_file("feature.txt"),
                 "ticket-gate": gate or says("criteria met\nGATE:PASS"),
+                "final-review": says("fine\nGATE:PASS"),
             }
         )
 
@@ -42,7 +43,7 @@ class TracerBulletTest(unittest.TestCase):
         result = run(self.config(), self.forge, agents, self.git)
 
         self.assertEqual(result.exit_code, EXIT_OK)
-        (pr_number, pr), = self.forge.prs.items()
+        (pr_number, pr), = [(n, p) for n, p in self.forge.prs.items() if p["base"] == INTEGRATION]
         self.assertEqual(pr["state"], "merged")
         self.assertEqual(pr["base"], INTEGRATION)
         self.assertEqual(self.forge.merges[0][:2], (pr_number, "merge"))
@@ -60,7 +61,7 @@ class TracerBulletTest(unittest.TestCase):
 
     def test_ticket_pr_is_opened_by_the_conductor_and_references_the_ticket(self) -> None:
         run(self.config(), self.forge, self.agents(), self.git)
-        (pr,) = self.forge.prs.values()
+        (pr,) = [p for p in self.forge.prs.values() if p["base"] == INTEGRATION]
         self.assertEqual(pr["head"], "feat/52-ticket-54")
         self.assertIn(f"#{TICKET}", pr["body"])
 
@@ -113,7 +114,7 @@ class TracerBulletTest(unittest.TestCase):
                 config = Config(verify_commands=("true",)).with_run(
                     prd=PRD, repo_root=repo.checkout, state_root=repo.state_root
                 )
-                agents = FakeAgents({"implementer": commits_file("feature.txt"), "ticket-gate": says(text)})
+                agents = FakeAgents({"implementer": commits_file("feature.txt"), "ticket-gate": says(text), "final-review": says("GATE:PASS")})
                 result = run(config, forge, agents, GitCli(repo.checkout))
                 self.assertEqual(result.exit_code, EXIT_INCOMPLETE)
                 self.assertEqual(forge.merges, [])

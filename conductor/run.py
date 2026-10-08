@@ -4,26 +4,14 @@ Tracer bullet: one queued ticket from claim to merged-into-integration.
 Later tickets extend this loop (frontier, parallelism, fix rounds, final PR)
 through the same ports.
 """
-from dataclasses import dataclass
-
-from conductor import labels
+from conductor import final, labels
 from conductor.config import Config
 from conductor.markers import OutcomeKind, Verdict, outcome_of, verdict_of
 from conductor.naming import integration_branch, ticket_branch
 from conductor.ports import Agents, Forge, Git, Issue, SessionRequest
 from conductor.prompts import implementer_prompt, ticket_gate_prompt
+from conductor.result import EXIT_INCOMPLETE, EXIT_OK, EXIT_STARTUP_ERROR, RunResult
 from conductor.verify import run_verify
-
-EXIT_OK = 0
-EXIT_STARTUP_ERROR = 1
-EXIT_INCOMPLETE = 3
-
-
-@dataclass(frozen=True)
-class RunResult:
-    exit_code: int
-    reason: str
-
 
 def run(config: Config, forge: Forge, agents: Agents, git: Git) -> RunResult:
     prd = forge.get_issue(config.prd)
@@ -33,7 +21,10 @@ def run(config: Config, forge: Forge, agents: Agents, git: Git) -> RunResult:
 
     integration = integration_branch(config.branch_prefix, config.prd, prd.title)
     git.create_branch(integration, config.base_branch)
-    return _integrate_ticket(config, forge, agents, git, queued[0], integration)
+    integrated = _integrate_ticket(config, forge, agents, git, queued[0], integration)
+    if integrated.exit_code != EXIT_OK:
+        return integrated
+    return final.run_final(config, forge, agents, git, integration)
 
 
 def _fail(forge: Forge, ticket: Issue, label: str, reason: str) -> RunResult:
@@ -93,6 +84,7 @@ def _integrate_ticket(
         if not forge.merge_pr(pr.number, method="merge", head_sha=head_sha):
             return _fail(forge, ticket, labels.FAILED_ISSUE, f"ticket #{ticket.number}: merge refused")
         forge.set_labels(ticket.number, add=(labels.INTEGRATED,), remove=(labels.IN_REVIEW,))
+        final.open_draft_after_first_merge(config, forge, integration)
         return RunResult(EXIT_OK, "integrated")
     finally:
         git.remove_worktree(worktree, branch)
