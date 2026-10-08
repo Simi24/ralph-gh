@@ -1,0 +1,7 @@
+"""Ticket state labels. Only the conductor writes these."""
+QUEUED = "ralph:queued"
+IN_PROGRESS = "ralph:in-progress"
+IN_REVIEW = "ralph:in-review"
+INTEGRATED = "ralph:integrated"
+FAILED_ISSUE = "ralph:failed:issue"
+BLOCKED = "ralph:blocked"
