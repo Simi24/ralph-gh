@@ -4,30 +4,19 @@ Tracer bullet: one queued ticket from claim to merged-into-integration.
 Later tickets extend this loop (frontier, parallelism, fix rounds, final PR)
 through the same ports.
 """
-from dataclasses import dataclass
 from pathlib import Path
 
-from conductor import graph, labels
+from conductor import final, graph, labels
 from conductor.config import Config
 from conductor.exploration import ensure_notes
 from conductor.naming import integration_branch
 from conductor.observer import NullObserver, Observer
 from conductor.ports import Agents, Blocker, Forge, Git, Issue
 from conductor.preflight import Environment, preflight
+from conductor.result import EXIT_INCOMPLETE, EXIT_OK, EXIT_STARTUP_ERROR, RunResult
 from conductor.ticket_flow import integrate_ticket
 
-EXIT_OK = 0
-EXIT_STARTUP_ERROR = 1
-EXIT_INCOMPLETE = 3
-
 _HALTED = frozenset({labels.FAILED_ISSUE, labels.BLOCKED})
-
-
-@dataclass(frozen=True)
-class RunResult:
-    exit_code: int
-    reason: str
-
 
 def run(
     config: Config,
@@ -72,7 +61,10 @@ def _run(config: Config, forge: Forge, agents: Agents, git: Git, env: Environmen
     integration = integration_branch(config.branch_prefix, config.prd, prd.title)
     git.create_branch(integration, config.base_branch)
     notes = ensure_notes(config, agents)
-    return _work_frontier(config, forge, agents, git, blockers, integration, notes, obs)
+    frontier = _work_frontier(config, forge, agents, git, blockers, integration, notes, obs)
+    if frontier.exit_code != EXIT_OK:
+        return frontier
+    return final.run_final(config, forge, agents, git, integration)
 
 
 def _work_frontier(

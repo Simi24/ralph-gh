@@ -51,13 +51,14 @@ class FixLoopTest(unittest.TestCase):
             "implementer": implement_by_ticket,
             "ticket-gate": says("GATE:PASS"),
             "fix": says("RALPH:DONE"),
+            "final-review": says("GATE:PASS"),
         }
 
     def start(self, *tickets: Issue, verify: str = "true", rounds: int = 2):
         self.forge.add_sub_issues(PRD, list(tickets))
         self.agents = FakeAgents(self.behaviors)
         config = Config(verify_commands=(verify,), gate_fix_rounds=rounds).with_run(
-            prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root
+            prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root, autonomy="halt-each-pr"
         )
         notes = notes_path(config)
         notes.parent.mkdir(parents=True, exist_ok=True)
@@ -69,7 +70,7 @@ class FixLoopTest(unittest.TestCase):
         return self.forge.get_issue(number).labels
 
     def roles(self) -> list[str]:
-        return [r.role for r in self.agents.requests]
+        return [r.role for r in self.agents.requests if r.role != "final-review"]
 
     def test_failing_verify_is_repaired_by_a_fix_session_and_integrated(self) -> None:
         self.behaviors["fix"] = fix_with_file("fixed.txt")
@@ -90,7 +91,7 @@ class FixLoopTest(unittest.TestCase):
         self.assertNotIn("FOLLOWUP-SENTINEL", fix.prompt)
         self.assertIn(str(self.notes), fix.prompt)  # notes pointer
         self.assertEqual(fix.add_dirs, (self.notes.parent,))
-        (pr,) = self.forge.prs.values()
+        (pr,) = [p for p in self.forge.prs.values() if "ticket-1" in p["head"]]
         self.assertEqual(pr["state"], "merged")
 
     def test_verify_fix_prompt_carries_the_notes_pointer(self) -> None:

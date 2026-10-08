@@ -24,6 +24,11 @@ class FakeForge:
         self.label_trail: dict[int, list[frozenset[str]]] = {}
         self.comments: dict[int, list[tuple[int, str]]] = {}  # number -> [(comment id, body)]
         self.comment_seq = 0
+        # Final-PR support: head moves are scripted through `pr_heads`.
+        self.pr_heads: dict[int, str] = {}
+        self.final_diff: list[str] | None = ["README.md"]  # None = unreadable
+        self.ready: list[int] = []
+        self.closed: list[int] = []
 
     def add_sub_issues(self, prd: int, tickets: list[Issue]) -> None:
         for t in tickets:
@@ -48,12 +53,37 @@ class FakeForge:
     def comment(self, number: int, body: str) -> None:
         self.create_comment(number, body)
 
-    def create_pr(self, *, head: str, base: str, title: str, body: str) -> PullRequest:
+    def create_pr(self, *, head: str, base: str, title: str, body: str, draft: bool = False) -> PullRequest:
         number = 100 + len(self.prs) + 1
-        self.prs[number] = {"head": head, "base": base, "title": title, "body": body, "state": "open"}
+        self.prs[number] = {
+            "head": head, "base": base, "title": title, "body": body, "state": "open", "draft": draft,
+        }
         return PullRequest(number, head, base)
 
+    def find_pr(self, *, head: str, base: str) -> PullRequest | None:
+        for number, pr in self.prs.items():
+            if (pr["head"], pr["base"], pr["state"]) == (head, base, "open"):
+                return PullRequest(number, head, base)
+        return None
+
+    def pr_head_sha(self, number: int) -> str:
+        return self.pr_heads.setdefault(number, f"{number:040x}")
+
+    def changed_files(self, number: int) -> list[str] | None:
+        return self.final_diff
+
+    def mark_ready(self, number: int) -> None:
+        self.prs[number]["draft"] = False
+        self.ready.append(number)
+
+    def close_issue(self, number: int) -> None:
+        self.issues[number] = replace(self.issues[number], state="closed")
+        self.closed.append(number)
+
     def merge_pr(self, number: int, *, method: str, head_sha: str) -> bool:
+        # A pin that no longer matches the head is refused, like GitHub does.
+        if number in self.pr_heads and self.pr_heads[number] != head_sha:
+            return False
         self.prs[number]["state"] = "merged"
         self.merges.append((number, method, head_sha))
         return True
