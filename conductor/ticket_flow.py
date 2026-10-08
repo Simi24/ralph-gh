@@ -22,7 +22,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from conductor import labels
+from conductor import final, labels
 from conductor.config import Config
 from conductor.findings import blocking_findings, tail
 from conductor.markers import OutcomeKind, Verdict, outcome_of, verdict_of
@@ -166,6 +166,7 @@ def _flow(
             if gated:
                 if forge.merge_pr(pr.number, method="merge", head_sha=head_sha):
                     forge.set_labels(n, add=(labels.INTEGRATED,), remove=(labels.IN_REVIEW,))
+                    final.open_draft_after_first_merge(config, forge, integration)
                     return TicketResult(TicketStatus.INTEGRATED, f"ticket #{n} integrated")
                 # Refused. Only a moved integration branch (a conflict) is the ticket's
                 # to repair; any other refusal is a failure of the merge itself.

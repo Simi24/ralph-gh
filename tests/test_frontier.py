@@ -30,13 +30,18 @@ class FrontierTest(unittest.TestCase):
         self.addCleanup(self.repo.cleanup)
         self.forge = FakeForge([Issue(PRD, "Graph PRD")])
         self.agents = FakeAgents(
-            {"implementer": implement_by_ticket, "ticket-gate": says("GATE:PASS"), "fix": says("RALPH:DONE")}
+            {
+                "implementer": implement_by_ticket,
+                "ticket-gate": says("GATE:PASS"),
+                "fix": says("RALPH:DONE"),
+                "final-review": says("GATE:PASS"),
+            }
         )
 
     def start(self, *tickets: Issue):
         self.forge.add_sub_issues(PRD, list(tickets))
         config = Config(verify_commands=("true",)).with_run(
-            prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root
+            prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root, autonomy="halt-each-pr"
         )
         # Exploration is covered in test_exploration.py; here the notes already exist.
         notes = notes_path(config)
@@ -114,7 +119,8 @@ class FrontierTest(unittest.TestCase):
             Issue(3, "busy", frozenset({"ralph:in-progress"})),
             Issue(4, "done", frozenset({"ralph:integrated"})),
         )
-        self.assertEqual(result.exit_code, EXIT_OK)
+        # Leftover tickets are never touched, and they keep the final review from starting.
+        self.assertEqual(result.exit_code, EXIT_INCOMPLETE)
         self.assertEqual(self.order(), ["ticket-1"])
         self.assertEqual(self.labels(2), frozenset({"bug"}))
         self.assertEqual(self.labels(3), frozenset({"ralph:in-progress"}))

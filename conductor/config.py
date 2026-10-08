@@ -8,7 +8,8 @@ from pathlib import Path
 CONFIG_FILE = ".ralph-gh.toml"
 _PREFIX = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _AGENT = re.compile(r"^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$")
-_RUN_FIELDS = {"prd", "repo_root", "state_root"}
+AUTONOMY_MODES = ("halt-each-pr", "respect-hitl-arch", "yolo")
+_RUN_FIELDS = {"prd", "repo_root", "state_root", "autonomy"}
 
 
 class ConfigError(Exception):
@@ -27,6 +28,7 @@ class Config:
     ticket_gate_agent: str = "ralph-ticket-gate"
     session_timeout: int = 7200
     model: str | None = None
+    yolo_allowlist: tuple[str, ...] = ()  # Python regexes, re.search per changed path
     preflight_command: str = ""
     preflight_health_url: str = ""
     preflight_health_retries: int = 30
@@ -34,12 +36,29 @@ class Config:
     prd: int = 0
     repo_root: Path = Path(".")
     state_root: Path = Path(".")  # per-repo state dir: <root>/<owner>__<repo>
+    autonomy: str = "respect-hitl-arch"  # CLI flag; applies to the final PR only
 
-    def with_run(self, *, prd: int, repo_root: Path, state_root: Path) -> "Config":
-        return replace(self, prd=prd, repo_root=repo_root, state_root=state_root)
+    def with_run(self, *, prd: int, repo_root: Path, state_root: Path, autonomy: str | None = None) -> "Config":
+        config = replace(self, prd=prd, repo_root=repo_root, state_root=state_root)
+        if autonomy is None:
+            return config
+        if autonomy not in AUTONOMY_MODES:
+            raise ConfigError(f"autonomy: expected one of {', '.join(AUTONOMY_MODES)}")
+        return replace(config, autonomy=autonomy)
 
 
 _INT_KEYS = {"parallel", "gate_fix_rounds", "session_timeout", "preflight_health_retries"}
+
+
+def _parse_allowlist(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(p, str) and p for p in value):
+        raise ConfigError("yolo_allowlist: expected a list of non-empty regex strings")
+    for pattern in value:
+        try:
+            re.compile(pattern)
+        except re.error as e:
+            raise ConfigError(f"yolo_allowlist: invalid regex {pattern!r}: {e}") from None
+    return tuple(value)
 
 
 def parse_config(data: dict[str, object]) -> Config:
@@ -50,7 +69,8 @@ def parse_config(data: dict[str, object]) -> Config:
     commands = data.get("verify_commands")
     if not isinstance(commands, list) or not commands or not all(isinstance(c, str) and c for c in commands):
         raise ConfigError("verify_commands: required non-empty list of strings")
-    kwargs = {k: v for k, v in data.items() if k != "verify_commands"}
+    kwargs = {k: v for k, v in data.items() if k not in ("verify_commands", "yolo_allowlist")}
+    allowlist = _parse_allowlist(data.get("yolo_allowlist", []))
     for key, value in kwargs.items():
         if key in _INT_KEYS:
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
@@ -65,7 +85,7 @@ def parse_config(data: dict[str, object]) -> Config:
     for key in ("reviewer_agent", "ticket_gate_agent"):
         if key in kwargs and not _AGENT.match(str(kwargs[key])):
             raise ConfigError(f"{key}: invalid agent name")
-    return Config(verify_commands=tuple(commands), **kwargs)  # type: ignore[arg-type]
+    return Config(verify_commands=tuple(commands), yolo_allowlist=allowlist, **kwargs)  # type: ignore[arg-type]
 
 
 def load_config(path: Path) -> Config:

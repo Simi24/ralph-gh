@@ -39,6 +39,7 @@ class ParallelTest(unittest.TestCase):
         self.behaviors = {
             "implementer": self.implement,
             "ticket-gate": says("GATE:PASS"),
+            "final-review": says("GATE:PASS"),
             "fix": says("RALPH:DONE"),
         }
         self.during = lambda request: None  # scenario hook, runs inside the implementer
@@ -60,7 +61,7 @@ class ParallelTest(unittest.TestCase):
         self.forge.add_sub_issues(PRD, list(tickets))
         self.agents = FakeAgents(self.behaviors)
         config = Config(verify_commands=("true",), parallel=parallel).with_run(
-            prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root
+            prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root, autonomy="halt-each-pr"
         )
         notes = notes_path(config)
         notes.parent.mkdir(parents=True, exist_ok=True)

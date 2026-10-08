@@ -25,10 +25,11 @@ class RunLockTest(unittest.TestCase):
             {
                 "implementer": lambda r: commits_file("a.txt")(r),
                 "ticket-gate": says("GATE:PASS"),
+            "final-review": says("GATE:PASS"),
             }
         )
         self.config = Config(verify_commands=("true",)).with_run(
-            prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root
+            prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root, autonomy="halt-each-pr"
         )
         notes = notes_path(self.config)
         notes.parent.mkdir(parents=True, exist_ok=True)

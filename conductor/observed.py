@@ -42,8 +42,8 @@ class ObservedForge:
             if label in add:
                 self._obs.event(number, event)
 
-    def create_pr(self, *, head: str, base: str, title: str, body: str) -> PullRequest:
-        pr = self._inner.create_pr(head=head, base=base, title=title, body=body)
+    def create_pr(self, *, head: str, base: str, title: str, body: str, draft: bool = False) -> PullRequest:
+        pr = self._inner.create_pr(head=head, base=base, title=title, body=body, draft=draft)
         self._obs.event(_ticket_of_branch(head), f"PR #{pr.number} opened ({head} -> {base})")
         return pr
 

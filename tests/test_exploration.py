@@ -36,6 +36,7 @@ class ExplorationTest(unittest.TestCase):
                 "exploration": exploration,
                 "implementer": commits_file("feature.txt"),
                 "ticket-gate": says("ok\nGATE:PASS"),
+                "final-review": says("ok\nGATE:PASS"),
             }
         )
 

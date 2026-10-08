@@ -28,6 +28,7 @@ class MergeFixTest(unittest.TestCase):
         self.behaviors = {
             "implementer": commits_file("shared.txt"),
             "ticket-gate": self.gate_moves_the_tip,
+            "final-review": says("GATE:PASS"),
             "merge-fix": self.merge_tip,
             "fix": says("RALPH:DONE"),
         }
@@ -59,7 +60,7 @@ class MergeFixTest(unittest.TestCase):
         self.agents = FakeAgents(self.behaviors)
         config = Config(
             verify_commands=(f"echo run >> {self.verify_log}",), gate_fix_rounds=rounds
-        ).with_run(prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root)
+        ).with_run(prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root, autonomy="halt-each-pr")
         notes = notes_path(config)
         notes.parent.mkdir(parents=True, exist_ok=True)
         notes.write_text("notes")

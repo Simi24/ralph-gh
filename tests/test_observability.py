@@ -112,7 +112,7 @@ class ObservedRunTest(unittest.TestCase):
         self.forge.add_sub_issues(PRD, [Issue(TICKET, "t", frozenset({"ralph:queued"}))])
         self.clock = FakeClock()
         self.config = Config(verify_commands=("true",)).with_run(
-            prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root
+            prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root, autonomy="halt-each-pr"
         )
         notes = notes_path(self.config)  # exploration is covered in test_exploration.py
         notes.parent.mkdir(parents=True)
@@ -126,7 +126,7 @@ class ObservedRunTest(unittest.TestCase):
         return result
 
     def agents(self, **overrides) -> FakeAgents:
-        behaviors = {"implementer": commits_file("f.txt"), "ticket-gate": says("GATE:PASS")}
+        behaviors = {"implementer": commits_file("f.txt"), "ticket-gate": says("GATE:PASS"), "final-review": says("GATE:PASS")}
         behaviors.update(overrides)
         return FakeAgents(behaviors)
 
@@ -146,7 +146,7 @@ class ObservedRunTest(unittest.TestCase):
             "#54 ticket-gate session started",
             "PR #101 merged",
             "#54 integrated",
-            "run ended: integrated",
+            "run ended: final review passed, merge withheld: autonomy=halt-each-pr",
         ):
             self.assertIn(expected, text)
 
@@ -162,7 +162,7 @@ class ObservedRunTest(unittest.TestCase):
         for phase in ("implementer", "verify", "gate"):
             self.assertRegex(text, rf"- {phase}: \d+s")
         self.assertIn("- fix: none", text)
-        self.assertEqual(text.rstrip("\n").splitlines()[-1], "Exit reason: integrated")
+        self.assertEqual(text.rstrip("\n").splitlines()[-1], "Exit reason: final review passed, merge withheld: autonomy=halt-each-pr")
 
     def test_last_run_ends_with_the_exit_reason_after_a_crash(self) -> None:
         def explode(request):
@@ -197,7 +197,7 @@ class ObservedRunTest(unittest.TestCase):
     def test_without_an_observer_nothing_is_written(self) -> None:
         run(self.config, self.forge, self.agents(), GitCli(self.repo.checkout))
         self.assertFalse((self.repo.state_root / "last-run.md").exists())
-        self.assertEqual(self.forge.comments, {})
+        self.assertEqual(self.forge.list_comments(PRD), [])  # no status comment without an observer
 
 
 if __name__ == "__main__":
