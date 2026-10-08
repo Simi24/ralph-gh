@@ -17,10 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from conductor import graph
+from conductor import graph, reconcile, stopping
 from conductor.config import Config
 from conductor.observer import Observer
-from conductor.ports import Agents, Blocker, Forge, Git, Issue
+from conductor.ports import Agents, Blocker, Forge, Git, Issue, PullRequest
+from conductor.stopping import StopState
 from conductor.ticket_flow import Flow, integrate_ticket
 
 POLL_SECONDS = 1.0  # how long the conductor waits before it flushes observer lines again
@@ -29,13 +30,16 @@ POLL_SECONDS = 1.0  # how long the conductor waits before it flushes observer li
 @dataclass
 class _Running:
     flow: Flow
+    ticket: Issue
 
 
 def work_frontier(
     config: Config, forge: Forge, agents: Agents, git: Git, blockers: dict[int, list[Blocker]], integration: str,
-    notes: Path | None, obs: Observer,
+    notes: Path | None, obs: Observer, stop: StopState,
 ) -> None:
-    """Dispatch and drive tickets until nothing is running and nothing can be dispatched."""
+    """Dispatch and drive tickets until nothing is running and nothing can be dispatched,
+    or until `stop` says otherwise (a drain dispatches nothing new, an immediate stop
+    abandons everything in flight; see stopping.py)."""
     finished: queue.Queue[tuple[int, Future[Any]]] = queue.Queue()
     running: dict[int, _Running] = {}
     dispatched: set[int] = set()
@@ -55,32 +59,41 @@ def work_frontier(
             return
         submit(number, job)
 
-    def dispatch(ticket: Issue) -> None:
+    def dispatch(ticket: Issue, resume: PullRequest | None) -> None:
         dispatched.add(ticket.number)
-        flow = integrate_ticket(config, forge, agents, git, ticket, integration, notes, obs)
-        running[ticket.number] = _Running(flow)
+        flow = integrate_ticket(config, forge, agents, git, ticket, integration, notes, obs, stop.sessions, resume)
+        running[ticket.number] = _Running(flow, ticket)
         advance(ticket.number)  # claims the ticket and starts its first job
 
+    resumes = reconcile.resumable(config, forge, integration, forge.list_sub_issues(config.prd))
     try:
         while True:
             obs.flush()
-            if len(running) < config.parallel:
+            stop.poll_file()  # --- stop hook: STOP file ---
+            if stop.immediate:  # --- stop hook: abandon in-flight work ---
+                return
+            if not stop.draining and len(running) < config.parallel:  # a drain dispatches nothing new
                 tickets = forge.list_sub_issues(config.prd)
-                ready = [t for t in graph.dispatchable(tickets, blockers) if t.number not in dispatched]
-                for ticket in ready[: config.parallel - len(running)]:
-                    dispatch(ticket)
+                ready = [(t, pr) for t, pr in resumes if t.number not in dispatched]
+                ready += [(t, None) for t in graph.dispatchable(tickets, blockers) if t.number not in dispatched]
+                for ticket, resume in ready[: config.parallel - len(running)]:
+                    dispatch(ticket, resume)
             if not running:
                 return
             try:
                 number, future = finished.get(timeout=POLL_SECONDS)
             except queue.Empty:
                 continue
+            if stop.immediate:  # --- stop hook: a result that arrives now is never acted on ---
+                return
             error = future.exception()
             advance(number, None if error else future.result(), error)
     finally:
         pool.shutdown(wait=True)  # in-flight sessions end before their worktrees are removed
+        abandoned = [state.ticket for state in running.values()]
         for state in running.values():
             _close(state.flow)
+        stopping.requeue_in_flight(stop, config, forge, integration, abandoned)  # --- stop hook: no-op unless immediate ---
 
 
 def _close(flow: Generator[Any, Any, Any]) -> None:

@@ -31,16 +31,20 @@ def ensure_notes(config: Config, agents: Agents) -> Path | None:
         return path
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    session = agents.start(
-        SessionRequest(
-            role="exploration",
-            prompt=exploration_prompt(config, path),
-            cwd=config.repo_root,
-            model=config.model,
-            timeout=config.session_timeout,
-            add_dirs=(path.parent,),
+    try:
+        session = agents.start(
+            SessionRequest(
+                role="exploration",
+                prompt=exploration_prompt(config, path),
+                cwd=config.repo_root,
+                model=config.model,
+                timeout=config.session_timeout,
+                add_dirs=(path.parent,),
+            )
         )
-    )
+    except BaseException:  # a stop mid-session: never leave a partial file for the next run
+        shutil.rmtree(path.parent, ignore_errors=True)
+        raise
     outcome = outcome_of(session)
     if outcome.kind is OutcomeKind.DONE and _has_notes(path):
         return path

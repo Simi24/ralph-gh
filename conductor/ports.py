@@ -38,6 +38,7 @@ class PullRequest:
     number: int
     head: str  # head branch name
     base: str  # base branch name
+    state: str = "open"  # "open" | "merged" | "closed" (only latest_pr reports the last two)
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,10 @@ class Forge(Protocol):
     def create_pr(self, *, head: str, base: str, title: str, body: str, draft: bool = False) -> PullRequest: ...
     def find_pr(self, *, head: str, base: str) -> PullRequest | None:
         """The open same-repo PR from `head` into `base`, if any."""
+        ...
+
+    def latest_pr(self, *, head: str, base: str) -> PullRequest | None:
+        """The most recent PR from `head` into `base` in any state, if any. Raise on API errors."""
         ...
 
     def pr_head_sha(self, number: int) -> str:

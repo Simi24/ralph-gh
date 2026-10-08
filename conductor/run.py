@@ -6,7 +6,7 @@ through the same ports.
 """
 from pathlib import Path
 
-from conductor import final, graph, labels
+from conductor import final, graph, labels, reconcile
 from conductor.config import Config
 from conductor.exploration import ensure_notes
 from conductor.lock import RunLock
@@ -16,6 +16,8 @@ from conductor.ports import Agents, Blocker, Forge, Git, Issue
 from conductor.preflight import Environment, preflight
 from conductor.result import EXIT_INCOMPLETE, EXIT_OK, EXIT_STARTUP_ERROR, RunResult
 from conductor.scheduler import work_frontier
+from conductor.sessions import Stopped
+from conductor.stopping import STOP_FILE, StopAwareAgents, StopState
 
 _HALTED = frozenset({labels.FAILED_ISSUE, labels.BLOCKED})
 
@@ -26,25 +28,32 @@ def run(
     git: Git,
     env: Environment | None = None,
     observer: Observer | None = None,
+    stop: StopState | None = None,
 ) -> RunResult:
+    stop = stop or StopState(config.state_root / STOP_FILE)
     lock = RunLock(config.state_root / "lock")
     if not lock.acquire():  # before anything mutates: not the board, not the state directory
         holder = f" (pid {lock.holder})" if lock.holder else ""
         return RunResult(EXIT_STARTUP_ERROR, f"another conductor is already running for this repo{holder}")
     try:
-        return _run_locked(config, forge, agents, git, env, observer)
+        stop.clear_stale_file()  # only with the lock held: never eat a live run's STOP file
+        return _run_locked(config, forge, agents, git, env, observer, stop)
     finally:
         lock.release()
 
 
 def _run_locked(
-    config: Config, forge: Forge, agents: Agents, git: Git, env: Environment | None, observer: Observer | None
+    config: Config, forge: Forge, agents: Agents, git: Git, env: Environment | None, observer: Observer | None,
+    stop: StopState,
 ) -> RunResult:
     obs = observer or NullObserver()  # observability (#64): status comment, run.log, last-run.md
     forge, agents = obs.wrap(forge, agents)
+    agents = StopAwareAgents(agents, stop)
     obs.start()
     try:
-        result = _run(config, forge, agents, git, env, obs)
+        result = _run(config, forge, agents, git, env, obs, stop)
+    except Stopped:  # a session ended or started after an immediate stop
+        result = stop.result() or RunResult(EXIT_INCOMPLETE, "stopped")
     except BaseException as error:
         obs.finish(f"error ({type(error).__name__})")
         raise
@@ -52,7 +61,9 @@ def _run_locked(
     return result
 
 
-def _run(config: Config, forge: Forge, agents: Agents, git: Git, env: Environment | None, obs: Observer) -> RunResult:
+def _run(
+    config: Config, forge: Forge, agents: Agents, git: Git, env: Environment | None, obs: Observer, stop: StopState
+) -> RunResult:
     if env is not None:  # startup checks: nothing below runs if one fails
         failure = preflight(config, env)
         if failure is not None:
@@ -69,13 +80,19 @@ def _run(config: Config, forge: Forge, agents: Agents, git: Git, env: Environmen
     if cycle:
         names = ", ".join(f"#{n}" for n in cycle)
         return RunResult(EXIT_STARTUP_ERROR, f"dependency cycle among tickets: {names}")
-    if not any(labels.QUEUED in t.labels for t in tickets):
+    integration = integration_branch(config.branch_prefix, config.prd, prd.title)
+    reconcile.reconcile_board(config, forge, integration, tickets)  # a resumed run starts from the real board
+    tickets = forge.list_sub_issues(config.prd)
+    if not any({labels.QUEUED, labels.IN_REVIEW, labels.INTEGRATED} & t.labels for t in tickets):
         return RunResult(EXIT_STARTUP_ERROR, f"no {labels.QUEUED} ticket in PRD #{config.prd}")
 
-    integration = integration_branch(config.branch_prefix, config.prd, prd.title)
     git.create_branch(integration, config.base_branch)
     notes = ensure_notes(config, agents)
-    frontier = _work_frontier(config, forge, agents, git, blockers, integration, notes, obs)
+    frontier = _work_frontier(config, forge, agents, git, blockers, integration, notes, obs, stop)
+    stop.poll_file()  # a STOP file dropped during the last ticket
+    stopped = stop.result()
+    if stopped is not None:  # the board is left for a later run; no final PR work after a stop
+        return stopped
     if frontier.exit_code != EXIT_OK:
         return frontier
     return final.run_final(config, forge, agents, git, integration)
@@ -85,12 +102,13 @@ def _work_frontier(
     config: Config, forge: Forge, agents: Agents, git: Git, blockers: dict[int, list[Blocker]], integration: str,
     notes: Path | None,
     obs: Observer,
+    stop: StopState,
 ) -> RunResult:
     """Integrate tickets, up to `parallel` at a time, always from the current frontier.
 
     A failed or blocked ticket is left for a human; the loop carries on with
     whatever does not depend on it."""
-    work_frontier(config, forge, agents, git, blockers, integration, notes, obs)
+    work_frontier(config, forge, agents, git, blockers, integration, notes, obs, stop)
     return _finish(forge.list_sub_issues(config.prd), blockers)
 
 
