@@ -10,6 +10,7 @@ from pathlib import Path
 
 from conductor.claude_agents import ClaudeAgents
 from conductor.config import AUTONOMY_MODES, Config, ConfigError
+from conductor.drift import drift_warning, install_dir
 from conductor.gh_forge import GhForge
 from conductor.gh_runner import subprocess_runner
 from conductor.git_adapter import GitCli
@@ -55,6 +56,9 @@ def _stop(repo: RepoContext) -> int:
 
 
 def _run(repo: RepoContext, config: Config) -> int:
+    warning = drift_warning(install_dir())
+    if warning:  # advisory: never blocks the run
+        print(f"ralph-gh: WARNING: {warning}", file=sys.stderr)
     config.state_root.mkdir(parents=True, exist_ok=True)
     stop = StopState(config.state_root / STOP_FILE)
     restore = install_signal_handlers(stop)
