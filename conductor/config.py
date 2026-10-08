@@ -8,6 +8,8 @@ from pathlib import Path
 CONFIG_FILE = ".ralph-gh.toml"
 _PREFIX = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _AGENT = re.compile(r"^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$")
+_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
+_MODEL = re.compile(r"^[A-Za-z0-9._/:\[\]-]+$")  # model ids carry ':' and '[1m]'
 AUTONOMY_MODES = ("halt-each-pr", "respect-hitl-arch", "yolo")
 _RUN_FIELDS = {"prd", "repo_root", "state_root", "autonomy"}
 
@@ -53,6 +55,12 @@ _INT_KEYS = {"parallel", "gate_fix_rounds", "session_timeout", "preflight_health
 _BOOL_KEYS = {"wait_for_reset"}
 
 
+def _check_token(key: str, value: str, pattern: "re.Pattern[str]", what: str) -> None:
+    """Config values reach git and claude argv lists: never an option, never `..`."""
+    if not pattern.match(value) or value.startswith("-") or ".." in value:
+        raise ConfigError(f"{key}: not a safe {what} (no leading '-', no '..', no spaces): {value!r}")
+
+
 def _parse_allowlist(value: object) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(isinstance(p, str) and p for p in value):
         raise ConfigError("yolo_allowlist: expected a list of non-empty regex strings")
@@ -86,11 +94,15 @@ def parse_config(data: dict[str, object]) -> Config:
     for key in ("parallel", "session_timeout", "preflight_health_retries", "usage_wait_seconds"):
         if kwargs.get(key, 1) < 1:  # type: ignore[operator]
             raise ConfigError(f"{key}: must be >= 1")
+    _check_token("branch_prefix", str(kwargs.get("branch_prefix", "feat")), _REF, "ref")
     if not _PREFIX.match(str(kwargs.get("branch_prefix", "feat"))):
         raise ConfigError("branch_prefix: only [a-z0-9-]")
+    _check_token("base_branch", str(kwargs.get("base_branch", "main")), _REF, "ref")
     for key in ("reviewer_agent", "ticket_gate_agent"):
-        if key in kwargs and not _AGENT.match(str(kwargs[key])):
-            raise ConfigError(f"{key}: invalid agent name")
+        if key in kwargs:
+            _check_token(key, str(kwargs[key]), _AGENT, "agent name")
+    if "model" in kwargs:
+        _check_token("model", str(kwargs["model"]), _MODEL, "model id")
     return Config(verify_commands=tuple(commands), yolo_allowlist=allowlist, **kwargs)  # type: ignore[arg-type]
 
 
