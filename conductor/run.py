@@ -87,7 +87,7 @@ def _run(
     frontier = _work_frontier(config, forge, agents, git, blockers, integration, notes, obs, sleep)
     if frontier.exit_code != EXIT_OK:
         return frontier
-    return guarded(config, sleep, lambda: final.run_final(config, forge, agents, git, integration))
+    return guarded(config, sleep, lambda: final.run_final(config, forge, agents, git, integration, notes, obs))
 
 
 def _work_frontier(

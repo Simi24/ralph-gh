@@ -57,3 +57,14 @@ class GitCli:
         if not _SHA.match(sha):
             raise GitError(f"unexpected sha: {sha!r}")
         return sha
+
+    def is_ancestor(self, ancestor: str, descendant: str) -> bool:
+        """Fail closed: bad shas, a failed fetch or a failed check all mean False."""
+        if not (_SHA.match(ancestor) and _SHA.match(descendant)):
+            return False
+        try:
+            self._git("fetch", "origin", descendant)  # by sha: brings its ancestry along
+            self._git("merge-base", "--is-ancestor", ancestor, descendant)
+        except GitError:
+            return False
+        return True

@@ -3,19 +3,26 @@
 Flow: a draft PR is opened after the first ticket merge; once every ticket is
 integrated one final review runs; on PASS the PR is marked ready and merged
 according to the autonomy mode, pinned to the head commit the review saw.
-Every doubt means no merge.
+On FAIL one fix session per round gets the BLOCKING findings (bounded by
+`gate_fix_rounds`) and the next review is scoped to the fix diff when that is
+provably safe (gate_scope.py). Every doubt means no merge.
 """
 import re
 from collections.abc import Callable
+from pathlib import Path
 
 from conductor import labels
 from conductor.autonomy import decide_merge
 from conductor.config import Config
-from conductor.final_prompt import final_review_prompt
+from conductor.final_fix import FixStatus, run_fix_round
+from conductor.final_prompt import Rescope, final_review_prompt
+from conductor.findings import blocking_findings
+from conductor.gate_scope import Scope, resolve_gate_scope
 from conductor.markers import Verdict, verdict_of
+from conductor.observer import Observer
 from conductor.ports import Agents, Forge, Git, Issue, PullRequest, SessionRequest, SessionResult
 from conductor.result import EXIT_INCOMPLETE, EXIT_OK, RunResult
-from conductor.usage_limit import UsageLimitHit, describe
+from conductor.usage_limit import UNKNOWN_RESET, UsageLimitHit, describe
 from conductor.verdict_comment import verdict_comment
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -52,7 +59,8 @@ def open_draft_after_first_merge(config: Config, forge: Forge, integration: str)
 
 
 def _review(
-    config: Config, agents: Agents, git: Git, pr: PullRequest, integration: str, head_sha: str
+    config: Config, agents: Agents, git: Git, pr: PullRequest, integration: str, head_sha: str,
+    rescope: Rescope | None = None,
 ) -> tuple[SessionResult, Verdict]:
     """Run the final review, once more with a fresh session if the verdict is unparsable."""
     worktree = config.state_root / f"prd-{config.prd}" / "worktrees" / "final-review"
@@ -63,10 +71,11 @@ def _review(
             result = agents.start(
                 SessionRequest(
                     role="final-review",
-                    prompt=final_review_prompt(config, pr.number, integration, head_sha),
+                    prompt=final_review_prompt(config, pr.number, integration, head_sha, rescope),
                     cwd=worktree,
                     agent=config.reviewer_agent,
                     timeout=config.session_timeout,
+                    add_dirs=(rescope.prev_verdict.parent,) if rescope else (),
                 )
             )
             verdict = verdict_of(result)
@@ -90,34 +99,76 @@ def _block_prd(config: Config, forge: Forge, pr: PullRequest, note: str) -> None
     forge.comment(pr.number, note)
 
 
-def run_final(config: Config, forge: Forge, agents: Agents, git: Git, integration: str) -> RunResult:
+def _save_verdict(config: Config, round: int, text: str) -> Path | None:
+    """The conductor's own copy of a verdict, for the next round's re-review (None if unwritable)."""
+    path = config.state_root / f"prd-{config.prd}" / "final" / f"verdict-round-{round}.md"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    except OSError:
+        return None
+    return path
+
+
+def run_final(
+    config: Config, forge: Forge, agents: Agents, git: Git, integration: str,
+    notes: Path | None = None, obs: Observer | None = None,
+) -> RunResult:
     tickets = forge.list_sub_issues(config.prd)
     if not tickets or any(labels.INTEGRATED not in t.labels for t in tickets):
         return RunResult(EXIT_INCOMPLETE, "final review not started: not every ticket is integrated")
 
     pr = ensure_draft_pr(config, forge, integration)
-    head_sha = forge.pr_head_sha(pr.number)
-    if not _SHA.match(head_sha):
-        return RunResult(EXIT_INCOMPLETE, "final review not started: reviewed head commit unknown")
-
-    result, verdict = _review(config, agents, git, pr, integration, head_sha)
-    if result.usage_limit:  # a pause, not a verdict: run() waits or exits (#62)
-        raise UsageLimitHit(describe(result))
-    if verdict is Verdict.UNPARSABLE:
-        _block_prd(
-            config, forge, pr,
-            "Final review: no parsable verdict even after a retry -- the PR was never actually judged. "
-            "Left open (draft) for a human.",
+    fixes = 0
+    prev_sha = ""
+    prev_verdict: Path | None = None
+    while True:
+        round = fixes + 1
+        head_sha = forge.pr_head_sha(pr.number)
+        if not _SHA.match(head_sha):
+            return RunResult(EXIT_INCOMPLETE, "final review not started: reviewed head commit unknown")
+        scope = resolve_gate_scope(
+            git, round=round, prev_sha=prev_sha, head_sha=head_sha, prev_verdict=prev_verdict
         )
-        return RunResult(EXIT_INCOMPLETE, "final review unparsable twice")
+        rescope = Rescope(round, prev_sha, prev_verdict) if scope is Scope.FIX_DIFF and prev_verdict else None
+        result, verdict = _review(config, agents, git, pr, integration, head_sha, rescope)
+        if result.usage_limit:  # a pause, not a verdict: run() waits or exits (#62)
+            raise UsageLimitHit(describe(result))
+        if verdict is Verdict.UNPARSABLE:
+            _block_prd(
+                config, forge, pr,
+                "Final review: no parsable verdict even after a retry -- the PR was never actually judged. "
+                "Left open (draft) for a human.",
+            )
+            return RunResult(EXIT_INCOMPLETE, "final review unparsable twice")
 
-    forge.comment(pr.number, verdict_comment(result.text, f"final review of {head_sha[:7]}"))
-    if verdict is Verdict.FAIL:
-        _block_prd(
-            config, forge, pr,
-            "Final review: **FAIL**. Left open (draft) for a human. See the `## Gate verdict` comment.",
-        )
-        return RunResult(EXIT_INCOMPLETE, "final review failed")
+        label = f"final review of {head_sha[:7]}, round {round}, {scope.value}"
+        forge.comment(pr.number, verdict_comment(result.text, label))
+        if verdict is not Verdict.FAIL:
+            break
+
+        # FAIL: one fix session per round, given the BLOCKING findings only.
+        if fixes >= config.gate_fix_rounds:
+            findings, _ = blocking_findings(result.text)
+            _block_prd(
+                config, forge, pr,
+                f"Final review: **FAIL** after {fixes} fix round(s). Left open (draft) for a human. "
+                f"Open BLOCKING findings of the last review:\n\n{findings}",
+            )
+            return RunResult(EXIT_INCOMPLETE, f"final review failed after {fixes} fix round(s)")
+        fixes += 1
+        fix = run_fix_round(config, agents, git, integration, notes, result.text, fixes, obs)
+        if fix.status is FixStatus.USAGE_LIMIT:
+            raise UsageLimitHit(fix.detail or UNKNOWN_RESET)  # #62
+        if fix.status is not FixStatus.FIXED:
+            _block_prd(
+                config, forge, pr,
+                f"Final review: **FAIL**; fix round {fixes} {fix.status.value}: {fix.detail}\n"
+                "Left open (draft) for a human. See the `## Gate verdict` comment.",
+            )
+            return RunResult(EXIT_INCOMPLETE, f"final fix round {fixes} {fix.status.value}")
+        prev_sha = head_sha
+        prev_verdict = _save_verdict(config, round, result.text)
 
     if forge.pr_head_sha(pr.number) != head_sha:
         return RunResult(EXIT_INCOMPLETE, "head moved after review")
