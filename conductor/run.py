@@ -9,6 +9,7 @@ ticket is integrated, runs the final review and merge (final.py). Stop requests
 (stopping.py) and usage limits (usage_limit.py) end the run early without
 failing any ticket. The result carries the exit code and the reason line.
 """
+import logging
 import time
 
 from conductor import final, graph, labels, reconcile
@@ -18,15 +19,18 @@ from conductor.final import not_started_reason, numbers
 from conductor.lock import RunLock
 from conductor.naming import integration_branch
 from conductor.observer import NullObserver, Observer
-from conductor.ports import Agents, Blocker, Forge, Git, Issue
+from conductor.ports import Agents, Blocker, Forge, Git, InfraError, Issue
 from conductor.preflight import Environment, preflight
 from conductor.result import EXIT_INCOMPLETE, EXIT_OK, EXIT_STARTUP_ERROR, RunResult
 from conductor.scheduler import work_frontier
 from conductor.sessions import Stopped
+from conductor.state_dir import prd_dir
 from conductor.stopping import STOP_FILE, StopAwareAgents, StopState
 from conductor.usage_limit import Sleep, UsageLimitHit, exit_reason, guarded
 
-_HALTED = frozenset({labels.FAILED_ISSUE, labels.FAILED_SYSTEMIC, labels.BLOCKED})
+log = logging.getLogger("conductor")
+
+_HALTED =frozenset({labels.FAILED_ISSUE, labels.FAILED_SYSTEMIC, labels.BLOCKED})
 
 
 def run(
@@ -49,6 +53,20 @@ def run(
         return _run_locked(config, forge, agents, git, env, observer, stop, sleep)
     finally:
         lock.release()
+
+
+def _clear_stale_worktrees(config: Config, git: Git) -> None:
+    """Remove the worktrees a crashed or SIGKILLed run left under this PRD's `worktrees/` directory.
+
+    Safe only because the run lock is held: no other conductor can own them. No work is lost: a
+    worktree is only a scratch checkout. A ticket in review has its branch on the remote and is
+    resumed from its PR; an unpushed ticket is simply re-implemented. A failure here is not fatal:
+    the later `add_worktree` still fails closed exactly as it would have.
+    """
+    try:
+        git.remove_stale_worktrees(prd_dir(config.state_root, config.prd) / "worktrees")
+    except InfraError as error:
+        log.warning("could not clear stale worktrees: %s", error)
 
 
 def _run_locked(
@@ -81,6 +99,7 @@ def _run(
         failure = preflight(config, env)
         if failure is not None:
             return RunResult(EXIT_STARTUP_ERROR, f"preflight failed: {failure}")
+    _clear_stale_worktrees(config, git)  # the lock is held and nothing has used the directory yet
     prd = forge.get_issue(config.prd)
     tickets = forge.list_sub_issues(config.prd)
     if not tickets:

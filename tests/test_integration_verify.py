@@ -8,11 +8,12 @@ two together do not. Sessions synchronize on events and barriers, never on sleep
 import subprocess
 import threading
 import unittest
+from unittest import mock
 
 from conductor.config import Config
 from conductor.exploration import notes_path
-from conductor.git_adapter import GitCli
-from conductor.naming import integration_branch
+from conductor.git_adapter import GitCli, GitError
+from conductor.naming import integration_branch, ticket_branch
 from conductor.ports import Blocker, Issue, SessionRequest, SessionResult
 from conductor.run import EXIT_INCOMPLETE, EXIT_OK, run
 from conductor.stopping import StopState
@@ -412,6 +413,43 @@ class StopAndUsageLimitTest(IntegrationVerifyBase):
         self.go([ticket(3)])
         self.assertTrue([line for line in self.lines() if line.startswith("verify integration-verify")])
         self.assertNotIn("final-review", self.roles())
+
+
+class StaleWorktreesTest(IntegrationVerifyBase):
+    def leave_stale_worktrees(self) -> None:
+        """What a SIGKILLed run leaves: every kind of worktree, with their local branches."""
+        git = GitCli(self.repo.checkout)
+        trees = self.repo.state_root / f"prd-{PRD}" / "worktrees"
+        git.add_detached_worktree(trees / "integration-verify", self.repo.git("rev-parse", "HEAD"))
+        git.add_worktree(trees / "integration-fix", f"{INTEGRATION}-integration-fix", "main")
+        for n in (1, 2):
+            git.add_worktree(trees / f"ticket-{n}", ticket_branch("feat", PRD, n), "main")
+        (trees / "ticket-1" / "half-written.txt").write_text("crash\n")
+
+    def test_the_next_run_clears_stale_worktrees_and_integrates_with_a_green_check(self) -> None:
+        self.leave_stale_worktrees()
+        result = self.go([ticket(1), ticket(2)])
+        self.assertEqual(result.exit_code, EXIT_OK)  # not ralph:blocked, not failed:systemic
+        self.assert_no_ticket_failed(1, 2)
+        self.assertNotIn("ralph:blocked", self.labels(PRD))
+        self.assertEqual(self.roles().count("integration-fix"), 1)  # the red merge was repaired in a fresh worktree
+        self.assertEqual(self.repo.git("show", f"{self.tip()}:defs.txt", cwd=self.repo.origin), "old new")
+        trees = self.repo.git("worktree", "list")
+        self.assertNotIn("ticket-", trees)
+        self.assertNotIn("integration-", trees)
+
+    def test_a_failing_cleanup_is_logged_and_the_run_carries_on(self) -> None:
+        git = GitCli(self.repo.checkout)
+        with mock.patch.object(git, "remove_stale_worktrees", side_effect=GitError("boom")), self.assertLogs("conductor", "WARNING"):
+            self.forge.add_sub_issues(PRD, [ticket(3)])
+            self.agents = FakeAgents(self.behaviors)
+            cfg = Config(verify_commands=(self.verify_command(),), parallel=1).with_run(
+                prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root, autonomy="halt-each-pr"
+            )
+            notes_path(cfg).parent.mkdir(parents=True, exist_ok=True)
+            notes_path(cfg).write_text("notes")
+            result = run(cfg, self.forge, self.agents, git)
+        self.assertEqual(result.exit_code, EXIT_OK)
 
 
 if __name__ == "__main__":
