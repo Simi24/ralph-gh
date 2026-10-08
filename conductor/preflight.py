@@ -43,8 +43,14 @@ class Environment(Protocol):
         ...
 
     def fetch_base(self, base: str) -> bool: ...
-    def existing_labels(self) -> set[str]: ...
-    def create_label(self, name: str, color: str, description: str) -> None: ...
+    def existing_labels(self) -> set[str] | None:
+        """The repo's label names, None if they cannot be read."""
+        ...
+
+    def create_label(self, name: str, color: str, description: str) -> bool:
+        """True if the label now exists."""
+        ...
+
     def agent_roots(self) -> list[Path]:
         """Directories searched for agent definitions (user, then repo)."""
         ...
@@ -138,9 +144,11 @@ def _check_ticket_gate_agent(config: Config, env: Environment) -> str | None:
 
 def _check_labels(config: Config, env: Environment) -> str | None:
     existing = env.existing_labels()
+    if existing is None:
+        return "labels: could not read the repository's labels"
     for name, color, description in REQUIRED_LABELS:
-        if name not in existing:
-            env.create_label(name, color, description)
+        if name not in existing and not env.create_label(name, color, description):
+            return f"labels: could not create the missing label {name}"
     return None
 
 

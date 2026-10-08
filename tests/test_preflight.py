@@ -14,7 +14,8 @@ class FakeEnv:
     perms: dict[str, bool] | None = field(default_factory=lambda: {"push": True, "triage": True})
     status: list[str] = field(default_factory=list)
     fetch_ok: bool = True
-    labels: set[str] = field(default_factory=set)
+    labels: set[str] | None = field(default_factory=set)  # None = unreadable
+    create_ok: bool = True
     agent_dirs: list[Path] = field(default_factory=list)
     shell_rc: int = 0
     health: list[str | None] = field(default_factory=list)  # probe answers in order; None = healthy
@@ -38,11 +39,12 @@ class FakeEnv:
     def fetch_base(self, base: str) -> bool:
         return self.fetch_ok
 
-    def existing_labels(self) -> set[str]:
+    def existing_labels(self) -> set[str] | None:
         return self.labels
 
-    def create_label(self, name: str, color: str, description: str) -> None:
+    def create_label(self, name: str, color: str, description: str) -> bool:
         self.created.append(name)
+        return self.create_ok
 
     def agent_roots(self) -> list[Path]:
         return self.agent_dirs
@@ -83,11 +85,13 @@ class PreflightTest(unittest.TestCase):
             ("permissions", FakeEnv(perms={"push": False, "triage": True})),
             ("clean tree", FakeEnv(status=[" M file.py"])),
             ("fetch", FakeEnv(fetch_ok=False)),
+            ("labels", FakeEnv(labels=None)),
+            ("labels", FakeEnv(create_ok=False)),
         ]
         for name, env in cases:
             with self.subTest(name, env=env):
                 self.assertIn(name, self.failure(env))
-                self.assertEqual((env.created, env.shells, env.probes), ([], [], 0))
+                self.assertEqual((env.shells, env.probes), ([], 0))
 
     def test_ralph_files_untracked_do_not_dirty_the_tree(self) -> None:
         env = FakeEnv(status=["?? .ralph-gh.toml", "?? .ralph-gh.config", "?? .ralph-gh/"])
