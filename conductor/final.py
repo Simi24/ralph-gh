@@ -22,6 +22,7 @@ from conductor.markers import Verdict, verdict_of
 from conductor.observer import Observer
 from conductor.ports import Agents, Forge, Git, Issue, PullRequest, SessionRequest, SessionResult
 from conductor.result import EXIT_INCOMPLETE, EXIT_OK, RunResult
+from conductor.usage_limit import UNKNOWN_RESET, UsageLimitHit, describe
 from conductor.verdict_comment import verdict_comment
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -131,8 +132,8 @@ def run_final(
         )
         rescope = Rescope(round, prev_sha, prev_verdict) if scope is Scope.FIX_DIFF and prev_verdict else None
         result, verdict = _review(config, agents, git, pr, integration, head_sha, rescope)
-        if result.usage_limit:
-            return RunResult(EXIT_INCOMPLETE, "usage limit hit during the final review")
+        if result.usage_limit:  # a pause, not a verdict: run() waits or exits (#62)
+            raise UsageLimitHit(describe(result))
         if verdict is Verdict.UNPARSABLE:
             _block_prd(
                 config, forge, pr,
@@ -158,7 +159,7 @@ def run_final(
         fixes += 1
         fix = run_fix_round(config, agents, git, integration, notes, result.text, fixes, obs)
         if fix.status is FixStatus.USAGE_LIMIT:
-            return RunResult(EXIT_INCOMPLETE, "usage limit hit during a final fix round")
+            raise UsageLimitHit(fix.detail or UNKNOWN_RESET)  # #62
         if fix.status is not FixStatus.FIXED:
             _block_prd(
                 config, forge, pr,
