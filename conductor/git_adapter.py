@@ -4,6 +4,7 @@ The checkout itself is never modified: branches are created on origin and
 worktrees are added elsewhere. Every call runs in its own session (Ctrl-C
 must not kill a push halfway), and refs go after `--` or in a full refspec.
 """
+import shutil
 from pathlib import Path
 
 from conductor.ports import SHA, InfraError
@@ -82,6 +83,49 @@ class GitCli:
 
     def remove_detached_worktree(self, path: Path) -> None:
         self._git("worktree", "remove", "--force", "--", str(path))
+
+    def remove_stale_worktrees(self, root: Path) -> None:
+        base = root.resolve()
+        errors: list[str] = []
+        branches: list[str] = []
+        for path, branch in self._worktrees():
+            if path.parent != base:
+                continue  # only the direct children of `root`: never the checkout or anything else
+            if branch:
+                branches.append(branch)
+            self._attempt(errors, "worktree", "remove", "--force", "--", str(path))
+        self._attempt(errors, "worktree", "prune")
+        for branch in branches:
+            self._attempt(errors, "branch", "-D", "--", branch)
+        if base.is_dir():
+            for left in base.iterdir():  # a directory git no longer lists would still block the next add
+                if left.is_dir():
+                    shutil.rmtree(left, ignore_errors=True)
+                else:
+                    left.unlink(missing_ok=True)
+        if errors:
+            raise GitError("; ".join(errors))
+
+    def _worktrees(self) -> list[tuple[Path, str | None]]:
+        """(path, local branch or None) of every worktree git lists, from the porcelain output."""
+        found: list[tuple[Path, str | None]] = []
+        for block in self._git("worktree", "list", "--porcelain").split("\n\n"):
+            path: Path | None = None
+            branch: str | None = None
+            for line in block.splitlines():
+                if line.startswith("worktree "):
+                    path = Path(line.removeprefix("worktree ")).resolve()
+                elif line.startswith("branch refs/heads/"):
+                    branch = line.removeprefix("branch refs/heads/")
+            if path is not None:
+                found.append((path, branch))
+        return found
+
+    def _attempt(self, errors: list[str], *args: str) -> None:
+        try:
+            self._git(*args)
+        except GitError as error:
+            errors.append(str(error))
 
     def is_ancestor(self, ancestor: str, descendant: str) -> bool:
         """Fail closed: bad shas, a failed fetch or a failed check all mean False."""

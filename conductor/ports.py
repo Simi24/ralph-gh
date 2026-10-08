@@ -151,6 +151,11 @@ class Git(Protocol):
         ...
 
     def remove_detached_worktree(self, path: Path) -> None: ...
+    def remove_stale_worktrees(self, root: Path) -> None:
+        """Remove every worktree under `root` (forced), prune, and delete the local branch each
+        held. Best effort: keeps going past a failure and raises InfraError at the end."""
+        ...
+
     def is_ancestor(self, ancestor: str, descendant: str) -> bool:
         """True only when both are 40-hex shas, `descendant` could be fetched and `ancestor`
         is in its history. Any doubt or error is False."""
