@@ -9,7 +9,7 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import replace
 
-from conductor.ports import Issue, PullRequest, SessionRequest, SessionResult
+from conductor.ports import Blocker, Issue, PullRequest, SessionRequest, SessionResult
 
 Behavior = Callable[[SessionRequest], SessionResult]
 
@@ -18,6 +18,7 @@ class FakeForge:
     def __init__(self, issues: list[Issue]) -> None:
         self.issues = {i.number: i for i in issues}
         self.sub_issues: dict[int, list[int]] = {}
+        self.blockers: dict[int, list[Blocker]] = {}
         self.prs: dict[int, dict[str, str]] = {}
         self.merges: list[tuple[int, str, str]] = []  # (pr, method, head_sha)
         self.label_trail: dict[int, list[frozenset[str]]] = {}
@@ -32,6 +33,9 @@ class FakeForge:
 
     def list_sub_issues(self, prd: int) -> list[Issue]:
         return [self.issues[n] for n in self.sub_issues.get(prd, [])]
+
+    def list_blockers(self, number: int) -> list[Blocker]:
+        return list(self.blockers.get(number, []))
 
     def set_labels(self, number: int, *, add: tuple[str, ...] = (), remove: tuple[str, ...] = ()) -> None:
         issue = self.issues[number]
