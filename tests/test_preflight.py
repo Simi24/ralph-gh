@@ -60,7 +60,7 @@ class FakeEnv:
 
 
 def make_config(**extra: object) -> Config:
-    return parse_config({"verify_commands": ["true"], "reviewer_agent": "plugin:reviewer", **extra})
+    return parse_config({"verify_commands": ["true"], "reviewer_agent": "plugin:reviewer", "ticket_gate_agent": "plugin:gate", **extra})
 
 
 class PreflightTest(unittest.TestCase):
@@ -112,8 +112,16 @@ class PreflightTest(unittest.TestCase):
             self.assertIn("other-reviewer", message)
             self.assertIsNone(find_agent("nope", env.agent_dirs))
 
-    def test_ticket_gate_agent_is_not_required_at_startup(self) -> None:
-        self.assertIsNone(preflight(make_config(ticket_gate_agent="missing-one"), FakeEnv()))
+    def test_ticket_gate_agent_must_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = Path(tmp) / "agents"
+            agents.mkdir()
+            (agents / "gate.md").write_text("---\nname: my-gate\n---\nbody\n")
+            env = FakeEnv(agent_dirs=[agents])
+            self.assertIsNone(preflight(make_config(ticket_gate_agent="my-gate"), env))
+            message = self.failure(env, make_config(ticket_gate_agent="missing-one"))
+            self.assertIn("ticket gate agent", message)
+            self.assertIn("missing-one", message)
 
     def test_preflight_command_runs_once_when_not_healthy(self) -> None:
         env = FakeEnv()

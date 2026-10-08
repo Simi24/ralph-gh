@@ -116,16 +116,23 @@ def _check_fetch(config: Config, env: Environment) -> str | None:
     return None
 
 
-def _check_reviewer_agent(config: Config, env: Environment) -> str | None:
-    name = config.reviewer_agent
+def _check_agent(label: str, name: str, env: Environment) -> str | None:
     if ":" in name:  # plugin:agent, only name-checked at config load
         return None
     if find_agent(name, env.agent_roots()) is None:
         return (
-            f"reviewer agent: no agent named '{name}' in the user or repo agents directory "
+            f"{label}: no agent named '{name}' in the user or repo agents directory "
             "(run install.sh?)"
         )
     return None
+
+
+def _check_reviewer_agent(config: Config, env: Environment) -> str | None:
+    return _check_agent("reviewer agent", config.reviewer_agent, env)
+
+
+def _check_ticket_gate_agent(config: Config, env: Environment) -> str | None:
+    return _check_agent("ticket gate agent", config.ticket_gate_agent, env)
 
 
 def _check_labels(config: Config, env: Environment) -> str | None:
@@ -168,6 +175,7 @@ _CHECKS: tuple[Callable[[Config, Environment], str | None], ...] = (
     _check_clean_tree,
     _check_fetch,
     _check_reviewer_agent,
+    _check_ticket_gate_agent,
     _check_labels,
     _check_preflight_command,
     _check_health,
