@@ -58,6 +58,7 @@ class SessionResult:
     returncode: int = 0
     timed_out: bool = False
     usage_limit: bool = False
+    usage_reset: str = ""  # the reset time as the session stated it, for log and exit-reason text only
 
 
 class Forge(Protocol):

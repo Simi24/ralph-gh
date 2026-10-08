@@ -34,7 +34,8 @@ class StopResumeTest(unittest.TestCase):
         self.repo = TempRepo()
         self.addCleanup(self.repo.cleanup)
         self.forge = FakeForge([Issue(PRD, "Stop PRD")])
-        self.config = lambda parallel: Config(verify_commands=("true",), parallel=parallel).with_run(
+        self.cfg: dict = {}
+        self.config = lambda parallel: Config(verify_commands=("true",), parallel=parallel, **self.cfg).with_run(
             prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root, autonomy="halt-each-pr"
         )
         notes = notes_path(self.config(1))
@@ -53,7 +54,7 @@ class StopResumeTest(unittest.TestCase):
 
         self.forge.set_labels = spy  # type: ignore[method-assign]
 
-    def go(self, *tickets: Issue, parallel: int = 1, implementer=None, gate=None, stop=None, observer=None):
+    def go(self, *tickets: Issue, parallel: int = 1, implementer=None, gate=None, stop=None, observer=None, sleep=None):
         if tickets:
             self.forge.add_sub_issues(PRD, list(tickets))
         agents = FakeAgents(
@@ -66,7 +67,7 @@ class StopResumeTest(unittest.TestCase):
         )
         self.agents = agents
         return run(self.config(parallel), self.forge, agents, GitCli(self.repo.checkout), observer=observer,
-                   stop=stop or self.stop)
+                   stop=stop or self.stop, **({"sleep": sleep} if sleep else {}))
 
     def implement(self, request):
         self.implemented.append(number_of(request))
@@ -212,6 +213,21 @@ class StopResumeTest(unittest.TestCase):
         self.assertEqual(result.reason, "stopped by operator (immediate)")
         self.assertNotIn("ralph:blocked", self.forge.get_issue(PRD).labels)
         self.assertEqual(self.forge.merges, [])
+
+    def test_a_stop_during_a_usage_limit_wait_interrupts_the_wait(self) -> None:
+        self.cfg = {"wait_for_reset": True, "usage_wait_seconds": 600}
+        sleeps: list[float] = []
+
+        def sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            self.stop_file.write_text("")  # `ralph-gh stop`, mid-wait
+
+        limited = SessionResult(text="limit", usage_limit=True, usage_reset="resets 5pm")
+        result = self.go(ticket(1), implementer=lambda request: limited, sleep=sleep)
+        self.assertEqual((result.exit_code, result.reason), (EXIT_OK, "stopped by operator"))
+        self.assertEqual(len(sleeps), 1)  # not the whole 600s wait
+        self.assertEqual(self.labels(1), Q)  # parked by the usage limit
+        self.assertFalse(self.final_review_ran())
 
     # --- resume ---
 

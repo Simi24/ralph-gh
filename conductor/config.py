@@ -32,6 +32,8 @@ class Config:
     preflight_command: str = ""
     preflight_health_url: str = ""
     preflight_health_retries: int = 30
+    wait_for_reset: bool = False  # after a usage limit: wait and resume instead of exiting
+    usage_wait_seconds: int = 1800
     # Per-run values, supplied by the CLI (or by tests) through with_run()
     prd: int = 0
     repo_root: Path = Path(".")
@@ -47,7 +49,8 @@ class Config:
         return replace(config, autonomy=autonomy)
 
 
-_INT_KEYS = {"parallel", "gate_fix_rounds", "session_timeout", "preflight_health_retries"}
+_INT_KEYS = {"parallel", "gate_fix_rounds", "session_timeout", "preflight_health_retries", "usage_wait_seconds"}
+_BOOL_KEYS = {"wait_for_reset"}
 
 
 def _parse_allowlist(value: object) -> tuple[str, ...]:
@@ -72,12 +75,15 @@ def parse_config(data: dict[str, object]) -> Config:
     kwargs = {k: v for k, v in data.items() if k not in ("verify_commands", "yolo_allowlist")}
     allowlist = _parse_allowlist(data.get("yolo_allowlist", []))
     for key, value in kwargs.items():
-        if key in _INT_KEYS:
+        if key in _BOOL_KEYS:
+            if not isinstance(value, bool):
+                raise ConfigError(f"{key}: expected true or false")
+        elif key in _INT_KEYS:
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 raise ConfigError(f"{key}: expected a non-negative integer")
         elif not isinstance(value, str):
             raise ConfigError(f"{key}: expected a string")
-    for key in ("parallel", "session_timeout", "preflight_health_retries"):
+    for key in ("parallel", "session_timeout", "preflight_health_retries", "usage_wait_seconds"):
         if kwargs.get(key, 1) < 1:  # type: ignore[operator]
             raise ConfigError(f"{key}: must be >= 1")
     if not _PREFIX.match(str(kwargs.get("branch_prefix", "feat"))):

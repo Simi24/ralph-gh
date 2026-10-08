@@ -4,6 +4,7 @@ Tracer bullet: one queued ticket from claim to merged-into-integration.
 Later tickets extend this loop (frontier, parallelism, fix rounds, final PR)
 through the same ports.
 """
+import time
 from pathlib import Path
 
 from conductor import final, graph, labels, reconcile
@@ -18,6 +19,7 @@ from conductor.result import EXIT_INCOMPLETE, EXIT_OK, EXIT_STARTUP_ERROR, RunRe
 from conductor.scheduler import work_frontier
 from conductor.sessions import Stopped
 from conductor.stopping import STOP_FILE, StopAwareAgents, StopState
+from conductor.usage_limit import Sleep, UsageLimitHit, exit_reason, guarded
 
 _HALTED = frozenset({labels.FAILED_ISSUE, labels.BLOCKED})
 
@@ -29,6 +31,7 @@ def run(
     env: Environment | None = None,
     observer: Observer | None = None,
     stop: StopState | None = None,
+    sleep: Sleep = time.sleep,
 ) -> RunResult:
     stop = stop or StopState(config.state_root / STOP_FILE)
     lock = RunLock(config.state_root / "lock")
@@ -37,23 +40,26 @@ def run(
         return RunResult(EXIT_STARTUP_ERROR, f"another conductor is already running for this repo{holder}")
     try:
         stop.clear_stale_file()  # only with the lock held: never eat a live run's STOP file
-        return _run_locked(config, forge, agents, git, env, observer, stop)
+        return _run_locked(config, forge, agents, git, env, observer, stop, sleep)
     finally:
         lock.release()
 
 
 def _run_locked(
     config: Config, forge: Forge, agents: Agents, git: Git, env: Environment | None, observer: Observer | None,
-    stop: StopState,
+    stop: StopState, sleep: Sleep,
 ) -> RunResult:
     obs = observer or NullObserver()  # observability (#64): status comment, run.log, last-run.md
     forge, agents = obs.wrap(forge, agents)
     agents = StopAwareAgents(agents, stop)
     obs.start()
     try:
-        result = _run(config, forge, agents, git, env, obs, stop)
-    except Stopped:  # a session ended or started after an immediate stop
-        result = stop.result() or RunResult(EXIT_INCOMPLETE, "stopped")
+        try:
+            result = _run(config, forge, agents, git, env, obs, stop, sleep)
+        except Stopped:  # a session ended or started after an immediate stop
+            result = stop.result() or RunResult(EXIT_INCOMPLETE, "stopped")
+        except UsageLimitHit as hit:  # usage limit (#62): an incomplete run, never a failure
+            result = stop.result() or RunResult(EXIT_INCOMPLETE, exit_reason(hit.description))  # a stop wins
     except BaseException as error:
         obs.finish(f"error ({type(error).__name__})")
         raise
@@ -62,7 +68,8 @@ def _run_locked(
 
 
 def _run(
-    config: Config, forge: Forge, agents: Agents, git: Git, env: Environment | None, obs: Observer, stop: StopState
+    config: Config, forge: Forge, agents: Agents, git: Git, env: Environment | None, obs: Observer, stop: StopState,
+    sleep: Sleep,
 ) -> RunResult:
     if env is not None:  # startup checks: nothing below runs if one fails
         failure = preflight(config, env)
@@ -87,28 +94,27 @@ def _run(
         return RunResult(EXIT_STARTUP_ERROR, f"no {labels.QUEUED} ticket in PRD #{config.prd}")
 
     git.create_branch(integration, config.base_branch)
-    notes = ensure_notes(config, agents)
-    frontier = _work_frontier(config, forge, agents, git, blockers, integration, notes, obs, stop)
+    notes = guarded(config, sleep, lambda: ensure_notes(config, agents), stop.should_stop)
+    frontier = _work_frontier(config, forge, agents, git, blockers, integration, notes, obs, stop, sleep)
     stop.poll_file()  # a STOP file dropped during the last ticket
     stopped = stop.result()
     if stopped is not None:  # the board is left for a later run; no final PR work after a stop
         return stopped
     if frontier.exit_code != EXIT_OK:
         return frontier
-    return final.run_final(config, forge, agents, git, integration, notes, obs)
+    return guarded(config, sleep, lambda: final.run_final(config, forge, agents, git, integration, notes, obs), stop.should_stop)
 
 
 def _work_frontier(
     config: Config, forge: Forge, agents: Agents, git: Git, blockers: dict[int, list[Blocker]], integration: str,
     notes: Path | None,
-    obs: Observer,
-    stop: StopState,
+    obs: Observer, stop: StopState, sleep: Sleep,
 ) -> RunResult:
     """Integrate tickets, up to `parallel` at a time, always from the current frontier.
 
     A failed or blocked ticket is left for a human; the loop carries on with
     whatever does not depend on it."""
-    work_frontier(config, forge, agents, git, blockers, integration, notes, obs, stop)
+    work_frontier(config, forge, agents, git, blockers, integration, notes, obs, stop, sleep)
     return _finish(forge.list_sub_issues(config.prd), blockers)
 
 

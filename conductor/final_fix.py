@@ -14,6 +14,7 @@ from conductor.findings import blocking_findings, tail
 from conductor.markers import OutcomeKind, outcome_of
 from conductor.observer import NullObserver, Observer
 from conductor.ports import Agents, Git, SessionRequest
+from conductor.usage_limit import describe
 from conductor.verify import check_verify
 
 
@@ -53,7 +54,7 @@ def run_fix_round(
             )
         )
         if result.usage_limit:
-            return FixRound(FixStatus.USAGE_LIMIT)
+            return FixRound(FixStatus.USAGE_LIMIT, describe(result))
         outcome = outcome_of(result)
         if outcome.kind is OutcomeKind.BLOCKED:
             return FixRound(FixStatus.BLOCKED, outcome.reason or "no reason given")

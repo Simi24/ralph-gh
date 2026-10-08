@@ -197,8 +197,8 @@ class RequeueTest(unittest.TestCase):
         self.assertEqual(self.labels(1), frozenset({"ralph:queued"}))
         self.assertEqual(self.labels(2), IN_REVIEW)
         self.assertEqual(self.labels(3), IN_REVIEW)
-        self.assertIn("back in the queue", self.forge.comments[1][0][1])
-        self.assertIn("PR #101 stays open", self.forge.comments[2][0][1])
+        self.assertIn("requeued for retry", self.forge.comments[1][0][1])
+        self.assertIn("PR #101 stays ralph:in-review", self.forge.comments[2][0][1])
 
     def test_a_closed_or_merged_pr_is_not_an_open_pr(self) -> None:
         self.forge.prs[101]["state"] = "closed"

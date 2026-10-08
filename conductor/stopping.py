@@ -22,9 +22,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from conductor import labels
+from conductor import usage_limit
 from conductor.config import Config
-from conductor.naming import ticket_branch
 from conductor.ports import Forge, Issue, SessionRequest, SessionResult
 from conductor.result import EXIT_OK, RunResult
 from conductor.sessions import SessionRegistry, Stopped
@@ -87,6 +86,11 @@ class StopState:
         with self._lock:
             return RunResult(self._exit_code, self._reason) if self.draining else None
 
+    def should_stop(self) -> bool:
+        """For waits (usage-limit wait): look at the STOP file too, then say whether to stop waiting."""
+        self.poll_file()
+        return self.draining
+
     # --- the STOP file ---
 
     def poll_file(self) -> None:
@@ -138,15 +142,8 @@ def requeue_in_flight(stop: StopState, config: Config, forge: Forge, integration
     Never raises, and an unreadable PR state leaves the ticket untouched (fail closed)."""
     if not stop.immediate:
         return
-    for ticket in tickets:
-        n = ticket.number
+    for ticket in tickets:  # the same park path as a usage limit (usage_limit.park_ticket)
         try:
-            pr = forge.find_pr(head=ticket_branch(config.branch_prefix, config.prd, n), base=integration)
-            if pr is None:
-                forge.set_labels(n, add=(labels.QUEUED,), remove=(labels.IN_PROGRESS, labels.IN_REVIEW))
-                forge.comment(n, f"ralph-gh: the run was stopped; ticket #{n} has no open PR and is back in the queue.")
-            else:
-                forge.set_labels(n, add=(labels.IN_REVIEW,), remove=(labels.IN_PROGRESS,))
-                forge.comment(n, f"ralph-gh: the run was stopped; PR #{pr.number} stays open, the ticket stays in review.")
+            usage_limit.park_ticket(config, forge, ticket.number, integration, "immediate stop", "was stopped by the operator")
         except Exception as error:  # noqa: BLE001 - one ticket must not strand the others
-            log.warning(f"could not requeue ticket #{n} after the stop: {error}")
+            log.warning(f"could not park ticket #{ticket.number} after the stop: {error}")

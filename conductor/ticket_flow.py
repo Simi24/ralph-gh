@@ -63,7 +63,9 @@ def _usable(result: SessionResult) -> bool:
     return result.returncode == 0 and not result.timed_out and not result.usage_limit
 
 
-def _gate(config: Config, agents: Agents, ticket: int, integration: str, cwd: Path) -> tuple[Verdict, str]:
+def _gate(
+    config: Config, agents: Agents, ticket: int, integration: str, cwd: Path
+) -> tuple[Verdict, str, SessionResult]:
     """One gate, retried once with a fresh session when a healthy session gave
     no parsable verdict. Timeouts and usage limits are not retried."""
     request = SessionRequest(
@@ -77,9 +79,9 @@ def _gate(config: Config, agents: Agents, ticket: int, integration: str, cwd: Pa
         result = agents.start(request)
         verdict = verdict_of(result)
         if verdict is not Verdict.UNPARSABLE or not _usable(result):
-            return verdict, result.text
+            return verdict, result.text, result
         log.warning("ticket #%s: gate attempt %s gave no parsable verdict", ticket, attempt)
-    return Verdict.UNPARSABLE, ""
+    return Verdict.UNPARSABLE, "", result
 
 
 def _stop(forge: Forge, git: Git, worktree: Path, branch: str, ticket: Issue, status: TicketStatus, reason: str) -> TicketResult:
@@ -163,7 +165,7 @@ def _flow(
                 forge.set_labels(n, add=(labels.IN_REVIEW,), remove=(labels.IN_PROGRESS,))
             text = ""
             if not gated:
-                verdict, text = yield lambda: _gate(config, agents, n, integration, worktree)
+                verdict, text, _ = yield lambda: _gate(config, agents, n, integration, worktree)
                 if verdict is Verdict.UNPARSABLE:
                     return stop(
                         TicketStatus.FAILED,
