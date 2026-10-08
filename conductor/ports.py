@@ -28,6 +28,12 @@ class Blocker:
 
 
 @dataclass(frozen=True)
+class Comment:
+    id: int
+    body: str
+
+
+@dataclass(frozen=True)
 class PullRequest:
     number: int
     head: str  # head branch name
@@ -65,6 +71,17 @@ class Forge(Protocol):
     def merge_pr(self, number: int, *, method: str, head_sha: str) -> bool:
         """Merge pinned to head_sha; True only if the merge happened."""
         ...
+
+
+class CommentForge(Protocol):
+    """Issue comments (#64: the status comment on the PRD). All raise on API errors."""
+
+    def list_comments(self, number: int) -> list[Comment]: ...
+    def create_comment(self, number: int, body: str) -> int:
+        """Create a comment and return its id."""
+        ...
+
+    def update_comment(self, comment_id: int, body: str) -> None: ...
 
 
 class Agents(Protocol):
