@@ -17,8 +17,8 @@ class Scope(Enum):
     FIX_DIFF = "fix-diff"
 
 
-def resolve_gate_scope(git: Git, *, round: int, prev_sha: str, head_sha: str, prev_verdict: Path | None) -> Scope:
-    if round <= 1 or prev_verdict is None:
+def resolve_gate_scope(git: Git, *, round_no: int, prev_sha: str, head_sha: str, prev_verdict: Path | None) -> Scope:
+    if round_no <= 1 or prev_verdict is None:
         return Scope.FULL
     try:
         if not prev_verdict.is_file() or prev_verdict.stat().st_size == 0:

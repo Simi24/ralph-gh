@@ -5,9 +5,10 @@ GATE marker line. Fix sessions get that section only, never FOLLOW-UP findings.
 """
 import re
 
+from conductor.markers import VERDICT_LINE
+
 TAIL_LINES = 80
 _HEADING = re.compile(r"^\s*#{1,6}\s*blocking findings\s*:?\s*$", re.IGNORECASE)
-_MARKER = re.compile(r"^\s*`{0,2}GATE:(PASS|FAIL)`{0,2}\s*$")
 
 
 def blocking_findings(verdict: str) -> tuple[str, bool]:
@@ -16,7 +17,7 @@ def blocking_findings(verdict: str) -> tuple[str, bool]:
     lines = verdict.splitlines()
     starts = [i for i, line in enumerate(lines) if _HEADING.match(line)]
     if starts:
-        body = [line for line in lines[starts[-1] + 1:] if not _MARKER.match(line)]
+        body = [line for line in lines[starts[-1] + 1:] if not VERDICT_LINE.match(line)]
         text = "\n".join(body).strip()
         if text and text.strip("`*_ .").lower() != "none":
             return text, True

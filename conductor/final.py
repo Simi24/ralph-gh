@@ -8,10 +8,10 @@ On FAIL one fix session per round gets the BLOCKING findings (bounded by
 provably safe (gate_scope.py). Every doubt means no merge.
 """
 import re
-from collections.abc import Callable
 from pathlib import Path
 
 from conductor import labels
+from conductor.attempt import attempt
 from conductor.autonomy import decide_merge
 from conductor.config import Config
 from conductor.final_fix import FixStatus, run_fix_round
@@ -22,6 +22,7 @@ from conductor.markers import Verdict, verdict_of
 from conductor.observer import Observer
 from conductor.ports import SHA, Agents, Forge, Git, Issue, PullRequest, SessionRequest, SessionResult
 from conductor.result import EXIT_INCOMPLETE, EXIT_OK, RunResult
+from conductor.state_dir import prd_dir
 from conductor.usage_limit import UNKNOWN_RESET, UsageLimitHit, describe
 from conductor.verdict_comment import verdict_comment
 
@@ -79,7 +80,7 @@ def _review(
     rescope: Rescope | None = None,
 ) -> tuple[SessionResult, Verdict]:
     """Run the final review, once more with a fresh session if the verdict is unparsable."""
-    worktree = config.state_root / f"prd-{config.prd}" / "worktrees" / "final-review"
+    worktree = prd_dir(config.state_root, config.prd) / "worktrees" / "final-review"
     branch = f"{integration}-final-review"
     git.add_worktree(worktree, branch, integration)
     try:
@@ -115,9 +116,9 @@ def _block_prd(config: Config, forge: Forge, pr: PullRequest, note: str) -> None
     forge.comment(pr.number, note)
 
 
-def _save_verdict(config: Config, round: int, text: str) -> Path | None:
+def _save_verdict(config: Config, round_no: int, text: str) -> Path | None:
     """The conductor's own copy of a verdict, for the next round's re-review (None if unwritable)."""
-    path = config.state_root / f"prd-{config.prd}" / "final" / f"verdict-round-{round}.md"
+    path = prd_dir(config.state_root, config.prd) / "final" / f"verdict-round-{round_no}.md"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
@@ -141,14 +142,14 @@ def run_final(
     prev_sha = ""
     prev_verdict: Path | None = None
     while True:
-        round = fixes + 1
+        round_no = fixes + 1
         head_sha = forge.pr_head_sha(pr.number)
         if not SHA.match(head_sha):
             return RunResult(EXIT_INCOMPLETE, "final review not started: reviewed head commit unknown")
         scope = resolve_gate_scope(
-            git, round=round, prev_sha=prev_sha, head_sha=head_sha, prev_verdict=prev_verdict
+            git, round_no=round_no, prev_sha=prev_sha, head_sha=head_sha, prev_verdict=prev_verdict
         )
-        rescope = Rescope(round, prev_sha, prev_verdict) if scope is Scope.FIX_DIFF and prev_verdict else None
+        rescope = Rescope(round_no, prev_sha, prev_verdict) if scope is Scope.FIX_DIFF and prev_verdict else None
         result, verdict = _review(config, agents, git, pr, integration, head_sha, rescope)
         if result.usage_limit:  # a pause, not a verdict: run() waits or exits (#62)
             raise UsageLimitHit(describe(result))
@@ -160,7 +161,7 @@ def run_final(
             )
             return RunResult(EXIT_INCOMPLETE, "final review unparsable twice")
 
-        label = f"final review of {head_sha[:7]}, round {round}, {scope.value}"
+        label = f"final review of {head_sha[:7]}, round {round_no}, {scope.value}"
         forge.comment(pr.number, verdict_comment(result.text, label))
         if verdict is not Verdict.FAIL:
             break
@@ -186,7 +187,7 @@ def run_final(
             )
             return RunResult(EXIT_INCOMPLETE, f"final fix round {fixes} {fix.status.value}")
         prev_sha = head_sha
-        prev_verdict = _save_verdict(config, round, result.text)
+        prev_verdict = _save_verdict(config, round_no, result.text)
 
     if forge.pr_head_sha(pr.number) != head_sha:
         return RunResult(EXIT_INCOMPLETE, "head moved after review")
@@ -207,28 +208,18 @@ def run_final(
     return _close_out(config, forge, tickets)
 
 
-def _retry_once(action: Callable[[], None]) -> bool:
-    for _ in range(2):
-        try:
-            action()
-            return True
-        except Exception:  # noqa: BLE001
-            continue
-    return False
-
-
 def _tidy_ticket(forge: Forge, ticket: Issue) -> bool:
-    return _retry_once(
+    return attempt(
         lambda: forge.set_labels(ticket.number, add=(labels.DONE,), remove=(labels.INTEGRATED,))
-    ) and _retry_once(lambda: forge.close_issue(ticket.number))
+    ) and attempt(lambda: forge.close_issue(ticket.number))
 
 
 def _close_out(config: Config, forge: Forge, tickets: list[Issue]) -> RunResult:
     """After the merge: closing keywords do nothing off the default branch, so close explicitly."""
     failed = [t.number for t in tickets if not _tidy_ticket(forge, t)]
-    prd_ok = _retry_once(
+    prd_ok = attempt(
         lambda: forge.set_labels(config.prd, add=(labels.DONE,), remove=(labels.GATE_PASSED,))
-    ) and _retry_once(lambda: forge.close_issue(config.prd))
+    ) and attempt(lambda: forge.close_issue(config.prd))
     if not prd_ok:
         failed.append(config.prd)
     suffix = f" (board cleanup incomplete for {', '.join(f'#{n}' for n in failed)})" if failed else ""

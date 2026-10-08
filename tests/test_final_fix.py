@@ -230,10 +230,10 @@ class ResolveGateScopeTest(unittest.TestCase):
         self.verdict = self.repo.root / "verdict.md"
         self.verdict.write_text("FAIL\n")
 
-    def scope(self, *, round=2, prev=None, head=None, verdict="default") -> Scope:
+    def scope(self, *, round_no=2, prev=None, head=None, verdict="default") -> Scope:
         return resolve_gate_scope(
             self.git,
-            round=round,
+            round_no=round_no,
             prev_sha=prev or self.base,
             head_sha=head or self.child,
             prev_verdict=self.verdict if verdict == "default" else verdict,
@@ -243,7 +243,7 @@ class ResolveGateScopeTest(unittest.TestCase):
         self.assertIs(self.scope(), Scope.FIX_DIFF)
 
     def test_the_first_round_is_always_full(self) -> None:
-        self.assertIs(self.scope(round=1), Scope.FULL)
+        self.assertIs(self.scope(round_no=1), Scope.FULL)
 
     def test_a_missing_or_empty_previous_verdict_is_full(self) -> None:
         self.assertIs(self.scope(verdict=None), Scope.FULL)

@@ -13,7 +13,7 @@ from conductor.ports import SessionResult
 
 WINDOW = 5
 
-_VERDICT = re.compile(r"^\s*`{0,2}GATE:(PASS|FAIL)`{0,2}\s*$")
+VERDICT_LINE = re.compile(r"^\s*`{0,2}GATE:(PASS|FAIL)`{0,2}\s*$")  # the one definition of a verdict line
 _OUTCOME = re.compile(r"^\s*`{0,2}RALPH:(DONE|BLOCKED)(?:[ \t]+(\S.*?))?`{0,2}\s*$")
 
 
@@ -40,7 +40,7 @@ def _window(text: str) -> list[str]:
 
 
 def parse_verdict(text: str) -> Verdict:
-    found = {m.group(1) for line in _window(text) if (m := _VERDICT.match(line))}
+    found = {m.group(1) for line in _window(text) if (m := VERDICT_LINE.match(line))}
     if found == {"PASS"}:
         return Verdict.PASS
     if found == {"FAIL"}:
