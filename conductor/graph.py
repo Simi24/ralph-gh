@@ -64,3 +64,33 @@ def dispatchable(tickets: list[Issue], blockers: dict[int, list[Blocker]]) -> li
         and all(_satisfied(b, by_key) for b in blockers.get(t.number, []))
     ]
     return sorted(ready, key=lambda t: (labels.HITL_ARCH in t.labels, t.number))
+
+
+def halted_blockers(
+    tickets: list[Issue], blockers: dict[int, list[Blocker]], halted: frozenset[str]
+) -> dict[int, list[int]]:
+    """For each queued ticket, the failed or blocked tickets (labels in `halted`)
+    it depends on, directly or through other tickets. Only tickets with one appear."""
+    by_key = {key_of(t): t for t in tickets}
+
+    def reach(number: int, seen: set[Key]) -> set[int]:
+        found: set[int] = set()
+        for b in blockers.get(number, []):
+            bkey = (b.repo, b.number)
+            blocker = by_key.get(bkey)
+            if blocker is None or bkey in seen:
+                continue
+            seen.add(bkey)
+            if halted & blocker.labels:
+                found.add(blocker.number)
+            else:
+                found |= reach(blocker.number, seen)
+        return found
+
+    result = {}
+    for t in tickets:
+        if labels.QUEUED in t.labels:
+            found = reach(t.number, {key_of(t)})
+            if found:
+                result[t.number] = sorted(found)
+    return result

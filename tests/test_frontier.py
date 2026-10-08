@@ -29,7 +29,9 @@ class FrontierTest(unittest.TestCase):
         self.repo = TempRepo()
         self.addCleanup(self.repo.cleanup)
         self.forge = FakeForge([Issue(PRD, "Graph PRD")])
-        self.agents = FakeAgents({"implementer": implement_by_ticket, "ticket-gate": says("GATE:PASS")})
+        self.agents = FakeAgents(
+            {"implementer": implement_by_ticket, "ticket-gate": says("GATE:PASS"), "fix": says("RALPH:DONE")}
+        )
 
     def start(self, *tickets: Issue):
         self.forge.add_sub_issues(PRD, list(tickets))
