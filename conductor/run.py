@@ -4,27 +4,58 @@ Tracer bullet: one queued ticket from claim to merged-into-integration.
 Later tickets extend this loop (frontier, parallelism, fix rounds, final PR)
 through the same ports.
 """
-from conductor import final, labels
+from pathlib import Path
+
+from conductor import final, graph, labels
 from conductor.config import Config
+from conductor.exploration import ensure_notes
 from conductor.markers import OutcomeKind, Verdict, outcome_of, verdict_of
 from conductor.naming import integration_branch, ticket_branch
-from conductor.ports import Agents, Forge, Git, Issue, SessionRequest
+from conductor.ports import Agents, Blocker, Forge, Git, Issue, SessionRequest
 from conductor.prompts import implementer_prompt, ticket_gate_prompt
 from conductor.result import EXIT_INCOMPLETE, EXIT_OK, EXIT_STARTUP_ERROR, RunResult
 from conductor.verify import run_verify
 
 def run(config: Config, forge: Forge, agents: Agents, git: Git) -> RunResult:
     prd = forge.get_issue(config.prd)
-    queued = [t for t in forge.list_sub_issues(config.prd) if labels.QUEUED in t.labels]
-    if len(queued) != 1:
-        return RunResult(EXIT_STARTUP_ERROR, f"expected exactly one {labels.QUEUED} ticket, found {len(queued)}")
+    tickets = forge.list_sub_issues(config.prd)
+    if not tickets:
+        return RunResult(EXIT_STARTUP_ERROR, f"PRD #{config.prd} has no sub-issues")
+    try:
+        blockers = {t.number: forge.list_blockers(t.number) for t in tickets}
+    except Exception as error:  # fail closed: unknown dependencies are never "none"
+        return RunResult(EXIT_STARTUP_ERROR, f"could not read dependencies: {error}")
+    cycle = graph.find_cycle(tickets, blockers)
+    if cycle:
+        names = ", ".join(f"#{n}" for n in cycle)
+        return RunResult(EXIT_STARTUP_ERROR, f"dependency cycle among tickets: {names}")
+    if not any(labels.QUEUED in t.labels for t in tickets):
+        return RunResult(EXIT_STARTUP_ERROR, f"no {labels.QUEUED} ticket in PRD #{config.prd}")
 
     integration = integration_branch(config.branch_prefix, config.prd, prd.title)
     git.create_branch(integration, config.base_branch)
-    integrated = _integrate_ticket(config, forge, agents, git, queued[0], integration)
-    if integrated.exit_code != EXIT_OK:
-        return integrated
+    notes = ensure_notes(config, agents)
+    frontier = _work_frontier(config, forge, agents, git, blockers, integration, notes)
+    if frontier.exit_code != EXIT_OK:
+        return frontier
     return final.run_final(config, forge, agents, git, integration)
+
+
+def _work_frontier(
+    config: Config, forge: Forge, agents: Agents, git: Git, blockers: dict[int, list[Blocker]], integration: str,
+    notes: Path | None,
+) -> RunResult:
+    """Integrate tickets one at a time, always from the current frontier."""
+    while True:
+        tickets = forge.list_sub_issues(config.prd)
+        ready = graph.dispatchable(tickets, blockers)
+        if not ready:
+            if any(labels.QUEUED in t.labels for t in tickets):
+                return RunResult(EXIT_INCOMPLETE, "waiting on tickets or issues that are not done")
+            return RunResult(EXIT_OK, "integrated")
+        result = _integrate_ticket(config, forge, agents, git, ready[0], integration, notes)
+        if result.exit_code != EXIT_OK:
+            return result
 
 
 def _fail(forge: Forge, ticket: Issue, label: str, reason: str) -> RunResult:
@@ -33,7 +64,8 @@ def _fail(forge: Forge, ticket: Issue, label: str, reason: str) -> RunResult:
 
 
 def _integrate_ticket(
-    config: Config, forge: Forge, agents: Agents, git: Git, ticket: Issue, integration: str
+    config: Config, forge: Forge, agents: Agents, git: Git, ticket: Issue, integration: str,
+    notes: Path | None = None,
 ) -> RunResult:
     branch = ticket_branch(config.branch_prefix, config.prd, ticket.number)
     worktree = config.state_root / f"prd-{config.prd}" / "worktrees" / f"ticket-{ticket.number}"
@@ -44,10 +76,11 @@ def _integrate_ticket(
         session = agents.start(
             SessionRequest(
                 role="implementer",
-                prompt=implementer_prompt(config, ticket.number, integration),
+                prompt=implementer_prompt(config, ticket.number, integration, notes),
                 cwd=worktree,
                 model=config.model,
                 timeout=config.session_timeout,
+                add_dirs=(notes.parent,) if notes else (),
             )
         )
         outcome = outcome_of(session)
@@ -85,6 +118,6 @@ def _integrate_ticket(
             return _fail(forge, ticket, labels.FAILED_ISSUE, f"ticket #{ticket.number}: merge refused")
         forge.set_labels(ticket.number, add=(labels.INTEGRATED,), remove=(labels.IN_REVIEW,))
         final.open_draft_after_first_merge(config, forge, integration)
-        return RunResult(EXIT_OK, "integrated")
+        return RunResult(EXIT_OK, f"ticket #{ticket.number} integrated")
     finally:
         git.remove_worktree(worktree, branch)

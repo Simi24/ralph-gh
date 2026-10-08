@@ -1,6 +1,7 @@
 import unittest
 
 from conductor.config import Config
+from conductor.exploration import notes_path
 from conductor.git_adapter import GitCli
 from conductor.ports import Issue, SessionResult
 from conductor.run import EXIT_INCOMPLETE, EXIT_OK, run
@@ -32,6 +33,9 @@ class FinalPrTest(unittest.TestCase):
         config = Config(verify_commands=("test -f feature.txt",), yolo_allowlist=allowlist).with_run(
             prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root, autonomy=autonomy
         )
+        notes = notes_path(config)  # exploration is covered in test_exploration.py
+        notes.parent.mkdir(parents=True, exist_ok=True)
+        notes.write_text("notes")
         self.agents = FakeAgents(
             {
                 "implementer": commits_file("feature.txt"),

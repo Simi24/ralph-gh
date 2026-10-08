@@ -15,6 +15,16 @@ class Issue:
     title: str
     labels: frozenset[str] = frozenset()
     state: str = "open"
+    repo: str = ""  # owning repository, to tell cross-repo issues apart
+
+
+@dataclass(frozen=True)
+class Blocker:
+    """An issue that blocks another one (native `blocked_by` dependency)."""
+
+    repo: str
+    number: int
+    state: str  # "open" | "closed"
 
 
 @dataclass(frozen=True)
@@ -46,6 +56,10 @@ class SessionResult:
 class Forge(Protocol):
     def get_issue(self, number: int) -> Issue: ...
     def list_sub_issues(self, prd: int) -> list[Issue]: ...
+    def list_blockers(self, number: int) -> list[Blocker]:
+        """Native `blocked_by` dependencies of an issue. Raise on API errors: never read as "none"."""
+        ...
+
     def set_labels(self, number: int, *, add: tuple[str, ...] = (), remove: tuple[str, ...] = ()) -> None: ...
     def create_pr(self, *, head: str, base: str, title: str, body: str, draft: bool = False) -> PullRequest: ...
     def find_pr(self, *, head: str, base: str) -> PullRequest | None:
