@@ -1,3 +1,4 @@
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -13,8 +14,10 @@ class RunPreflightTest(unittest.TestCase):
         forge = FakeForge([Issue(52, "PRD")])
         forge.add_sub_issues(52, [Issue(54, "t", frozenset({"ralph:queued"}))])
         agents = FakeAgents({})
+        state = tempfile.TemporaryDirectory()
+        self.addCleanup(state.cleanup)
         config = parse_config({"verify_commands": ["true"]}).with_run(
-            prd=52, repo_root=Path("."), state_root=Path(".")
+            prd=52, repo_root=Path("."), state_root=Path(state.name)
         )
 
         result = run(config, forge, agents, git=None, env=FakeEnv(status=[" M x"]))  # type: ignore[arg-type]
