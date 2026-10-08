@@ -3,6 +3,7 @@ the repo. Never the PRD or ticket text."""
 from pathlib import Path
 
 from conductor.config import Config
+from conductor.ports import SHA
 
 
 OUTCOME_FOOTER = """Finish with exactly one last line, plain text:
@@ -65,14 +66,31 @@ default development method.
 {OUTCOME_FOOTER}"""
 
 
-def ticket_gate_prompt(config: Config, ticket: int, integration: str) -> str:
+SCOPE_RULE = (
+    "Scope rule: the diff of this ticket against the integration branch must contain only this ticket's\n"
+    "changes. Removing or rewriting code that exists on the integration branch and is not needed by\n"
+    "this ticket is BLOCKING."
+)
+
+
+def ticket_gate_prompt(config: Config, ticket: int, integration: str, merge_commit: str | None = None) -> str:
+    """`merge_commit`: after a merge-fix, the commit that resolved the conflict (a 40-hex sha) to inspect."""
+    resolved = ""
+    if merge_commit is not None and SHA.match(merge_commit):
+        resolved = (
+            f"\nA merge conflict with `{integration}` was resolved by a merge-fix session in merge commit\n"
+            f"`{merge_commit}`. Inspect it (`git show {merge_commit}`): the resolution must keep the code of\n"
+            "the already integrated tickets.\n"
+        )
     return f"""Light ticket gate for ticket #{ticket} of PRD #{config.prd}.
 
 Read the ticket with `gh issue view {ticket}`. Review the diff
 `origin/{integration}...HEAD` against the ticket's acceptance criteria and
 spec only. Do not review standards or design.
+{resolved}
+{SCOPE_RULE}
 
-FAIL if and only if at least one acceptance criterion is not met.
+FAIL if and only if at least one acceptance criterion is not met or the scope rule is broken.
 Finish with exactly one last line, plain text:
 GATE:PASS
 or

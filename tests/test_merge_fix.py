@@ -73,14 +73,57 @@ class MergeFixTest(unittest.TestCase):
         result = self.start()
         self.assertEqual(result.exit_code, EXIT_OK)
         self.assertEqual(self.roles().count("merge-fix"), 1)
-        self.assertEqual(self.roles().count("ticket-gate"), 1)  # not re-gated
-        self.assertEqual(len(self.verify_log.read_text().splitlines()), 2)  # before the gate, and after the merge-fix
+        self.assertEqual(self.roles().count("ticket-gate"), 2)  # gated again after the merge-fix
+        self.assertEqual(self.roles().index("merge-fix") + 1, self.roles().index("ticket-gate", self.roles().index("merge-fix")))
+        self.assertEqual(len(self.verify_log.read_text().splitlines()), 2)  # before the first gate, after the merge-fix
         self.assertEqual(self.forge.get_issue(1).labels & {"ralph:failed:issue"}, frozenset())
         self.assertIn("ralph:integrated", self.forge.get_issue(1).labels)
         # The second merge is pinned to the merged head, which contains the tip.
         self.assertEqual(len(self.forge.merges), 1)
         head = self.repo.git("rev-parse", BRANCH, cwd=self.repo.origin)
         self.assertEqual(self.forge.merges[0][2], head)
+
+    def gates(self) -> list[str]:
+        return [r.prompt for r in self.agents.requests if r.role == "ticket-gate"]
+
+    def test_every_gate_carries_the_scope_rule_and_only_the_regate_names_the_resolution(self) -> None:
+        self.start()
+        first, second = self.gates()
+        for prompt in (first, second):
+            self.assertIn("must contain only this ticket's", prompt)
+            self.assertIn("is BLOCKING", prompt)
+        self.assertNotIn("merge conflict", first)
+        head = self.repo.git("rev-parse", BRANCH, cwd=self.repo.origin)
+        self.assertIn("A merge conflict", second)
+        self.assertIn(f"merge commit\n`{head}`", second)  # the merge-fix left HEAD on the merge commit
+
+    def scripted_gate(self, *later: str):
+        """First gate: PASS, and another ticket lands (a conflict). Then the given verdicts, the last one repeating."""
+        verdicts = list(later)
+
+        def gate(request) -> SessionResult:
+            if not self.moves:
+                return self.gate_moves_the_tip(request)
+            return SessionResult(text=verdicts.pop(0) if len(verdicts) > 1 else verdicts[0])
+
+        return gate
+
+    def test_a_gate_fail_after_a_merge_fix_goes_through_the_gate_fix_rounds(self) -> None:
+        self.behaviors["ticket-gate"] = self.scripted_gate("### Blocking findings\n- dropped shared.txt\nGATE:FAIL", "GATE:PASS")
+        result = self.start()
+        self.assertEqual(result.exit_code, EXIT_OK)
+        self.assertEqual(self.roles().count("fix"), 1)
+        self.assertEqual(self.roles().count("ticket-gate"), 3)  # first, after merge-fix (FAIL), after the fix
+        self.assertIn("dropped shared.txt", [r for r in self.agents.requests if r.role == "fix"][0].prompt)
+        self.assertIn("ralph:integrated", self.forge.get_issue(1).labels)
+
+    def test_a_gate_that_keeps_failing_after_a_merge_fix_fails_the_ticket_after_the_same_rounds(self) -> None:
+        self.behaviors["ticket-gate"] = self.scripted_gate("### Blocking findings\n- bad\nGATE:FAIL")
+        result = self.start(rounds=2)
+        self.assertEqual(result.exit_code, EXIT_INCOMPLETE)
+        self.assertEqual(self.roles().count("fix"), 2)
+        self.assertEqual(self.forge.merges, [])
+        self.assertIn("ralph:failed:issue", self.forge.get_issue(1).labels)
 
     def test_merge_fix_attempts_are_bounded_separately_from_gate_fix_rounds(self) -> None:
         self.forge.refuse_merge[BRANCH] = 99  # never merges
