@@ -20,12 +20,11 @@ from conductor.findings import blocking_findings
 from conductor.gate_scope import Scope, resolve_gate_scope
 from conductor.markers import Verdict, verdict_of
 from conductor.observer import Observer
-from conductor.ports import Agents, Forge, Git, Issue, PullRequest, SessionRequest, SessionResult
+from conductor.ports import SHA, Agents, Forge, Git, Issue, PullRequest, SessionRequest, SessionResult
 from conductor.result import EXIT_INCOMPLETE, EXIT_OK, RunResult
 from conductor.usage_limit import UNKNOWN_RESET, UsageLimitHit, describe
 from conductor.verdict_comment import verdict_comment
 
-_SHA = re.compile(r"^[0-9a-f]{40}$")
 _CONVENTIONAL = re.compile(r"^[a-z]+(\([^)]*\))?!?: \S")
 
 
@@ -125,7 +124,7 @@ def run_final(
     while True:
         round = fixes + 1
         head_sha = forge.pr_head_sha(pr.number)
-        if not _SHA.match(head_sha):
+        if not SHA.match(head_sha):
             return RunResult(EXIT_INCOMPLETE, "final review not started: reviewed head commit unknown")
         scope = resolve_gate_scope(
             git, round=round, prev_sha=prev_sha, head_sha=head_sha, prev_verdict=prev_verdict

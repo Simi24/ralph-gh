@@ -10,20 +10,21 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
+from conductor import labels
 from conductor.config import Config
 
 # (name, color, description). Existing labels are never touched.
 REQUIRED_LABELS: tuple[tuple[str, str, str], ...] = (
-    ("ralph:queued", "0E8A16", "ralph-gh: ready to work"),
-    ("ralph:in-progress", "FBCA04", "ralph-gh: ticket being implemented"),
-    ("ralph:in-review", "1D76DB", "ralph-gh: ticket PR open, awaiting gate"),
-    ("ralph:integrated", "5319E7", "ralph-gh: merged into the integration branch"),
-    ("ralph:hitl-arch", "FFA500", "ralph-gh: architecturally sensitive, never auto-merge"),
-    ("ralph:gate-passed", "0052CC", "ralph-gh: review PASS, merge withheld for a human"),
-    ("ralph:done", "5319E7", "ralph-gh: merged"),
-    ("ralph:blocked", "B60205", "ralph-gh: a human decision is needed"),
-    ("ralph:failed:systemic", "B60205", "ralph-gh: infra/tooling failure"),
-    ("ralph:failed:issue", "D93F0B", "ralph-gh: per-issue implementation failure"),
+    (labels.QUEUED, "0E8A16", "ralph-gh: ready to work"),
+    (labels.IN_PROGRESS, "FBCA04", "ralph-gh: ticket being implemented"),
+    (labels.IN_REVIEW, "1D76DB", "ralph-gh: ticket PR open, awaiting gate"),
+    (labels.INTEGRATED, "5319E7", "ralph-gh: merged into the integration branch"),
+    (labels.HITL_ARCH, "FFA500", "ralph-gh: architecturally sensitive, never auto-merge"),
+    (labels.GATE_PASSED, "0052CC", "ralph-gh: review PASS, merge withheld for a human"),
+    (labels.DONE, "5319E7", "ralph-gh: merged"),
+    (labels.BLOCKED, "B60205", "ralph-gh: a human decision is needed"),
+    (labels.FAILED_SYSTEMIC, "B60205", "ralph-gh: infra/tooling failure"),
+    (labels.FAILED_ISSUE, "D93F0B", "ralph-gh: per-issue implementation failure"),
 )
 
 _TOOLS = ("claude", "gh", "git")

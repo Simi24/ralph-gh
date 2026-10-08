@@ -102,7 +102,8 @@ class MergeFixTest(unittest.TestCase):
         result = self.start()
         self.assertEqual(result.exit_code, EXIT_INCOMPLETE)
         self.assertEqual(self.roles().count("merge-fix"), 0)
-        self.assertIn("ralph:failed:issue", self.forge.get_issue(1).labels)
+        self.assertIn("ralph:failed:systemic", self.forge.get_issue(1).labels)
+        self.assertNotIn("ralph:failed:issue", self.forge.get_issue(1).labels)
 
 
 if __name__ == "__main__":

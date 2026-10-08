@@ -23,7 +23,7 @@ _LABEL_EVENTS = (
     (labels.INTEGRATED, "integrated"),
     (labels.BLOCKED, "blocked"),
     (labels.FAILED_ISSUE, "failed"),
-    ("ralph:failed:systemic", "failed (systemic)"),
+    (labels.FAILED_SYSTEMIC, "failed (systemic)"),
     (labels.QUEUED, "queued"),
 )
 

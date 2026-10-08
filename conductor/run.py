@@ -21,7 +21,7 @@ from conductor.sessions import Stopped
 from conductor.stopping import STOP_FILE, StopAwareAgents, StopState
 from conductor.usage_limit import Sleep, UsageLimitHit, exit_reason, guarded
 
-_HALTED = frozenset({labels.FAILED_ISSUE, labels.BLOCKED})
+_HALTED = frozenset({labels.FAILED_ISSUE, labels.FAILED_SYSTEMIC, labels.BLOCKED})
 
 def run(
     config: Config,

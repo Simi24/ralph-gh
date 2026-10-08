@@ -1,10 +1,15 @@
 """GhForge against a scripted `gh`: the commands it builds and how it reads the answers."""
 import json
+import os
+import stat
 import subprocess
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from conductor.gh_forge import GhForge
-from conductor.gh_runner import GhError
+from conductor.gh_runner import GhError, subprocess_runner
 from conductor.ports import Blocker, Comment, Issue, PullRequest
 
 SHA = "a" * 40
@@ -169,6 +174,17 @@ class GhForgeTest(unittest.TestCase):
         self.forge.mark_ready(3)
         self.forge.close_issue(4)
         self.assertEqual([c[:3] for c in self.gh.calls], [["pr", "ready", "3"], ["issue", "close", "4"]])
+
+
+class RunnerProcessGroupTest(unittest.TestCase):
+    def test_gh_runs_in_its_own_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            stub = Path(tmp) / "gh"
+            stub.write_text("#!/bin/sh\nps -o pgid= -p $$\n")
+            stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+            with mock.patch.dict(os.environ, {"PATH": f"{tmp}:{os.environ['PATH']}"}):
+                proc = subprocess_runner(Path(tmp))(["version"])
+        self.assertNotEqual(int(proc.stdout), os.getpgrp())
 
 
 if __name__ == "__main__":

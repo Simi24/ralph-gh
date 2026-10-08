@@ -17,6 +17,23 @@ from typing import Any
 GRACE_SECONDS = 2.0  # between SIGTERM and SIGKILL
 
 
+def kill_group(pgid: int, signum: int, killpg: Callable[[int, int], None] = os.killpg) -> None:
+    """Signal a whole process group; one that is already gone is not an error."""
+    try:
+        killpg(pgid, signum)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def run_detached(args: Any, **kwargs: Any) -> "subprocess.CompletedProcess[str]":
+    """`subprocess.run` with captured text output in its own session, so a terminal
+    Ctrl-C (SIGINT to the foreground process group) never kills a `git` or `gh`
+    call halfway through a merge or a push. Callers pass `cwd`, `timeout`, ..."""
+    return subprocess.run(
+        args, start_new_session=True, capture_output=True, text=True, errors="replace", **kwargs
+    )
+
+
 class Stopped(Exception):
     """The run is being stopped immediately: abandon this work."""
 
@@ -72,7 +89,4 @@ class SessionRegistry:
             self._signal(proc.pid, signal.SIGKILL)
 
     def _signal(self, pgid: int, signum: int) -> None:
-        try:
-            self._killpg(pgid, signum)
-        except (ProcessLookupError, PermissionError):
-            pass  # already gone
+        kill_group(pgid, signum, self._killpg)

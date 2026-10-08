@@ -14,6 +14,12 @@ sends each result back. Everything else (labels, PRs, merges, comments, git)
 happens in the generator body, so only the conductor thread writes.
 A PR that stops merging cleanly goes to a merge-fix session (bounded by its
 own counter, also `gate_fix_rounds`) and is re-verified, not re-gated.
+
+A `git` or `gh` failure inside a flow (an `InfraError`) is an infrastructure
+failure, never a traceback: the ticket gets `ralph:failed:systemic` and a
+diagnosis comment, its worktree goes, and independent tickets carry on. So does
+a merge refused for a reason other than a conflict. A refused merge whose PR
+turns out to be merged already is an integrated ticket.
 """
 import logging
 from collections.abc import Callable, Generator
@@ -25,12 +31,13 @@ from typing import Any
 from conductor import final, labels
 from conductor.config import Config
 from conductor.findings import blocking_findings, tail
-from conductor.markers import OutcomeKind, Verdict, outcome_of, verdict_of
+from conductor.markers import OutcomeKind, Verdict, outcome_of, usable, verdict_of
 from conductor.naming import ticket_branch
 from conductor.observer import NullObserver, Observer
-from conductor.ports import Agents, Forge, Git, Issue, PullRequest, SessionRequest, SessionResult
+from conductor.ports import Agents, Forge, Git, InfraError, Issue, PullRequest, SessionRequest
 from conductor.prompts import fix_prompt, implementer_prompt, merge_fix_prompt, ticket_gate_prompt
 from conductor.sessions import SessionRegistry
+from conductor.state_dir import prd_dir
 from conductor.verify import check_verify
 
 log = logging.getLogger("conductor")
@@ -40,6 +47,7 @@ class TicketStatus(Enum):
     INTEGRATED = "integrated"
     FAILED = "failed"
     BLOCKED = "blocked"
+    SYSTEMIC = "systemic"  # a git/gh failure, not the ticket's fault
 
 
 @dataclass(frozen=True)
@@ -59,10 +67,6 @@ def _writer(config: Config, role: str, prompt: str, cwd: Path, notes: Path | Non
     )
 
 
-def _usable(result: SessionResult) -> bool:
-    return result.returncode == 0 and not result.timed_out and not result.usage_limit
-
-
 def _gate(
     config: Config, agents: Agents, ticket: int, integration: str, cwd: Path
 ) -> tuple[Verdict, str, SessionResult]:
@@ -78,21 +82,36 @@ def _gate(
     for attempt in (1, 2):
         result = agents.start(request)
         verdict = verdict_of(result)
-        if verdict is not Verdict.UNPARSABLE or not _usable(result):
+        if verdict is not Verdict.UNPARSABLE or not usable(result):
             return verdict, result.text, result
         log.warning("ticket #%s: gate attempt %s gave no parsable verdict", ticket, attempt)
     return Verdict.UNPARSABLE, "", result
 
 
-def _stop(forge: Forge, git: Git, worktree: Path, branch: str, ticket: Issue, status: TicketStatus, reason: str) -> TicketResult:
+_STOP_LABEL = {
+    TicketStatus.BLOCKED: labels.BLOCKED,
+    TicketStatus.FAILED: labels.FAILED_ISSUE,
+    TicketStatus.SYSTEMIC: labels.FAILED_SYSTEMIC,
+}
+_STOP_KIND = {
+    TicketStatus.BLOCKED: "blocked, needs a human",
+    TicketStatus.FAILED: "failed",
+    TicketStatus.SYSTEMIC: "failed (infrastructure: git or gh, not the ticket)",
+}
+
+
+def _stop(
+    forge: Forge, git: Git, worktree: Path, branch: str, ticket: Issue, status: TicketStatus, reason: str,
+    push: bool = True,
+) -> TicketResult:
     """Leave the ticket for a human: keep the work on the remote, label, comment."""
-    try:
-        git.push(worktree, branch)  # so the work (and any open PR) survives the worktree
-    except Exception as error:
-        log.warning("ticket #%s: could not push %s: %s", ticket.number, branch, error)
-    label = labels.BLOCKED if status is TicketStatus.BLOCKED else labels.FAILED_ISSUE
-    forge.set_labels(ticket.number, add=(label,), remove=(labels.IN_PROGRESS, labels.IN_REVIEW))
-    kind = "blocked, needs a human" if status is TicketStatus.BLOCKED else "failed"
+    if push:
+        try:
+            git.push(worktree, branch)  # so the work (and any open PR) survives the worktree
+        except Exception as error:
+            log.warning("ticket #%s: could not push %s: %s", ticket.number, branch, error)
+    forge.set_labels(ticket.number, add=(_STOP_LABEL[status],), remove=(labels.IN_PROGRESS, labels.IN_REVIEW))
+    kind = _STOP_KIND[status]
     forge.comment(ticket.number, f"ralph-gh: ticket #{ticket.number} {kind}. {reason}")
     return TicketResult(status, f"ticket #{ticket.number} {kind}: {reason}")
 
@@ -113,17 +132,42 @@ def integrate_ticket(
     re-implemented: its branch is checked out and goes through verify, gate and merge."""
     obs = obs or NullObserver()
     branch = ticket_branch(config.branch_prefix, config.prd, ticket.number)
-    worktree = config.state_root / f"prd-{config.prd}" / "worktrees" / f"ticket-{ticket.number}"
+    worktree = prd_dir(config.state_root, config.prd) / "worktrees" / f"ticket-{ticket.number}"
 
-    if resume is None:
-        forge.set_labels(ticket.number, add=(labels.IN_PROGRESS,), remove=(labels.QUEUED,))
-    git.add_worktree(worktree, branch, integration if resume is None else branch)
+    try:
+        if resume is None:
+            forge.set_labels(ticket.number, add=(labels.IN_PROGRESS,), remove=(labels.QUEUED,))
+            _discard_closed_branch(forge, git, branch, integration)
+        git.add_worktree(worktree, branch, integration if resume is None else branch)
+    except InfraError as error:
+        return _stop(forge, git, worktree, branch, ticket, TicketStatus.SYSTEMIC, f"setup failed: {error}", push=False)
     try:
         return (yield from _flow(
             config, forge, agents, git, ticket, integration, notes, obs, branch, worktree, sessions, resume
         ))
+    except InfraError as error:  # a git/gh call failed: this ticket ends, the others carry on
+        return _stop(forge, git, worktree, branch, ticket, TicketStatus.SYSTEMIC, str(error))
     finally:
-        git.remove_worktree(worktree, branch)  # integrated, failed or blocked
+        try:
+            git.remove_worktree(worktree, branch)  # integrated, failed or blocked
+        except InfraError as error:
+            log.warning("ticket #%s: could not remove its worktree: %s", ticket.number, error)
+
+
+def _discard_closed_branch(forge: Forge, git: Git, branch: str, integration: str) -> None:
+    """A human closed this ticket's last PR unmerged and the ticket is redone: a push from a
+    fresh worktree would be rejected as non-fast-forward against the stale remote branch.
+    Delete that branch first (GitHub keeps the closed PR's commits under refs/pull/N/head,
+    so no work is lost). Never a force-push. Raises on any doubt: the caller fails the ticket."""
+    previous = forge.latest_pr(head=branch, base=integration)
+    if previous is not None and previous.state == "closed":
+        git.delete_remote_branch(branch)
+
+
+def _merged_anyway(forge: Forge, pr: PullRequest, branch: str, integration: str) -> bool:
+    """A merge reported as refused may have gone through: re-read the PR before deciding."""
+    latest = forge.latest_pr(head=branch, base=integration)
+    return latest is not None and latest.number == pr.number and latest.state == "merged"
 
 
 def _flow(
@@ -173,14 +217,18 @@ def _flow(
                     )
                 gated = verdict is Verdict.PASS
             if gated:
-                if forge.merge_pr(pr.number, method="merge", head_sha=head_sha):
+                if forge.merge_pr(pr.number, method="merge", head_sha=head_sha) or _merged_anyway(
+                    forge, pr, branch, integration
+                ):
                     forge.set_labels(n, add=(labels.INTEGRATED,), remove=(labels.IN_REVIEW,))
                     final.open_draft_after_first_merge(config, forge, integration)
                     return TicketResult(TicketStatus.INTEGRATED, f"ticket #{n} integrated")
                 # Refused. Only a moved integration branch (a conflict) is the ticket's
                 # to repair; any other refusal is a failure of the merge itself.
                 if not _behind(git, worktree, integration):
-                    return stop(TicketStatus.FAILED, f"the merge of PR #{pr.number} was refused")
+                    return stop(
+                        TicketStatus.SYSTEMIC, f"the merge of PR #{pr.number} was refused for a reason other than a conflict"
+                    )
                 if merge_rounds >= config.gate_fix_rounds:
                     return stop(
                         TicketStatus.FAILED,

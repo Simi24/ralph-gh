@@ -58,14 +58,14 @@ def parse_outcome(text: str) -> Outcome:
     return Outcome(OutcomeKind.UNPARSABLE)  # nothing found, or DONE and BLOCKED together
 
 
-def _usable(result: SessionResult) -> bool:
+def usable(result: SessionResult) -> bool:
     return result.returncode == 0 and not result.timed_out and not result.usage_limit
 
 
 def verdict_of(result: SessionResult) -> Verdict:
     """Session status is checked before its text."""
-    return parse_verdict(result.text) if _usable(result) else Verdict.UNPARSABLE
+    return parse_verdict(result.text) if usable(result) else Verdict.UNPARSABLE
 
 
 def outcome_of(result: SessionResult) -> Outcome:
-    return parse_outcome(result.text) if _usable(result) else Outcome(OutcomeKind.UNPARSABLE)
+    return parse_outcome(result.text) if usable(result) else Outcome(OutcomeKind.UNPARSABLE)

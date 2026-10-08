@@ -11,11 +11,10 @@ import re
 from typing import Any
 
 from conductor.gh_runner import Gh, GhError, Runner
-from conductor.ports import Blocker, Comment, Issue, PullRequest
+from conductor.ports import SHA, Blocker, Comment, Issue, PullRequest
 
 log = logging.getLogger("conductor")
 
-_SHA = re.compile(r"^[0-9a-f]{40}$")
 _METHODS = {"merge": "--merge", "squash": "--squash"}
 _PR_STATE = {"OPEN": "open", "MERGED": "merged", "CLOSED": "closed"}
 _URL_PREFIX = "https://api.github.com/repos/"
@@ -128,7 +127,7 @@ class GhForge:
 
     def pr_head_sha(self, number: int) -> str:
         sha = self._gh.run("pr", "view", str(number), "--repo", self._repo, "--json", "headRefOid", "--jq", ".headRefOid").strip()
-        if not _SHA.match(sha):
+        if not SHA.match(sha):
             raise GhError(f"PR #{number}: unexpected head sha {sha!r}")
         return sha
 
@@ -144,7 +143,7 @@ class GhForge:
 
     def merge_pr(self, number: int, *, method: str, head_sha: str) -> bool:
         """Never retried; True only when gh reports success."""
-        if method not in _METHODS or not _SHA.match(head_sha):
+        if method not in _METHODS or not SHA.match(head_sha):
             return False
         try:
             self._gh.run("pr", "merge", str(number), "--repo", self._repo, _METHODS[method], "--match-head-commit", head_sha)
