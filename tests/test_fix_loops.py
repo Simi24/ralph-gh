@@ -3,7 +3,6 @@ import unittest
 
 from conductor.config import Config
 from conductor.exploration import notes_path
-from conductor.findings import blocking_findings
 from conductor.git_adapter import GitCli
 from conductor.ports import Blocker, Issue, SessionResult
 from conductor.run import EXIT_INCOMPLETE, EXIT_OK, run
@@ -107,6 +106,33 @@ class FixLoopTest(unittest.TestCase):
     def test_no_doc_files_means_no_pointer_line(self) -> None:
         self.start(ticket(1))
         self.assertNotIn("Docs that must stay in sync", self.agents.requests[0].prompt)
+
+    def test_a_gate_verdict_without_a_findings_section_hands_the_fix_the_verdict_body(self) -> None:
+        self.behaviors["ticket-gate"] = sequence("FAIL\nAC-2-UNMET-SENTINEL\nGATE:FAIL", "GATE:PASS")
+        self.behaviors["fix"] = fix_with_file("fixed.txt")
+        result = self.start(ticket(1))
+        self.assertEqual(result.exit_code, EXIT_OK)
+        fix = self.agents.requests[2]
+        self.assertIn("AC-2-UNMET-SENTINEL", fix.prompt)
+        self.assertIn("the verdict had no findings section", fix.prompt)
+
+    def test_a_none_findings_section_falls_back_to_the_verdict_body_and_never_carries_the_marker(self) -> None:
+        verdict = "FAIL\nAC-3-UNMET-SENTINEL\n### Blocking findings\nnone\nGATE:FAIL"
+        self.behaviors["ticket-gate"] = sequence(verdict, "GATE:PASS")
+        self.behaviors["fix"] = fix_with_file("fixed.txt")
+        self.start(ticket(1))
+        fix = self.agents.requests[2]
+        self.assertIn("AC-3-UNMET-SENTINEL", fix.prompt)
+        self.assertIn("the verdict had no findings section", fix.prompt)
+
+    def test_the_blocking_section_is_handed_over_without_the_gate_marker(self) -> None:
+        self.behaviors["ticket-gate"] = sequence(VERDICT, "GATE:PASS")
+        self.behaviors["fix"] = fix_with_file("fixed.txt")
+        self.start(ticket(1))
+        fix = self.agents.requests[2]
+        self.assertIn("BLOCKING-SENTINEL", fix.prompt)
+        self.assertNotIn("GATE:FAIL", fix.prompt)
+        self.assertNotIn("the verdict had no findings section", fix.prompt)
 
     def test_verify_fix_prompt_carries_the_notes_pointer(self) -> None:
         self.behaviors["fix"] = fix_with_file("fixed.txt")
@@ -215,21 +241,6 @@ class FixLoopTest(unittest.TestCase):
             cwd=self.repo.checkout, capture_output=True, text=True,
         ).stdout
         self.assertIn("origin/feat/52-ticket-1", out)
-
-
-class BlockingFindingsTest(unittest.TestCase):
-    def test_extracts_the_section_without_the_marker(self) -> None:
-        text, found = blocking_findings(VERDICT)
-        self.assertTrue(found)
-        self.assertIn("BLOCKING-SENTINEL", text)
-        self.assertNotIn("FOLLOWUP-SENTINEL", text)
-        self.assertNotIn("GATE:FAIL", text)
-
-    def test_missing_or_none_section_falls_back_to_the_verdict_body(self) -> None:
-        for verdict in ("FAIL\nAC 2 unmet\nGATE:FAIL", "FAIL\nAC 2 unmet\n### Blocking findings\nnone\nGATE:FAIL"):
-            text, found = blocking_findings(verdict)
-            self.assertFalse(found)
-            self.assertIn("AC 2 unmet", text)
 
 
 if __name__ == "__main__":

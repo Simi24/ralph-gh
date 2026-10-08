@@ -3,6 +3,7 @@ continues from the board. Scenarios are driven from inside the fake sessions
 with events and barriers, never with sleeps."""
 import signal
 import threading
+import time
 import unittest
 
 from conductor.config import Config
@@ -35,7 +36,8 @@ class StopResumeTest(unittest.TestCase):
         self.addCleanup(self.repo.cleanup)
         self.forge = FakeForge([Issue(PRD, "Stop PRD")])
         self.cfg: dict = {}
-        self.config = lambda parallel: Config(verify_commands=("true",), parallel=parallel, **self.cfg).with_run(
+        self.verify: tuple[str, ...] = ("true",)
+        self.config = lambda parallel: Config(verify_commands=self.verify, parallel=parallel, **self.cfg).with_run(
             prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root, autonomy="halt-each-pr"
         )
         notes = notes_path(self.config(1))
@@ -159,6 +161,8 @@ class StopResumeTest(unittest.TestCase):
             self.assertTrue(self.forge.comments[n])
             self.assertFalse(self.worktree(n).exists())
         self.assertEqual(self.flag_when_requeued, [True, True])  # flag first, labels after
+        for n in (1, 2):
+            self.assertIn("requeued for retry (not a failure)", self.forge.comments[n][0][1])
         self.assertEqual(self.forge.prs, {})
         self.assertFalse(self.final_review_ran())
         last_run = (self.repo.state_root / "last-run.md").read_text()
@@ -187,10 +191,73 @@ class StopResumeTest(unittest.TestCase):
         self.assertEqual(result.reason, "stopped by operator (immediate)")
         self.assertEqual(self.labels(1), frozenset({"ralph:in-review"}))  # not requeued, not merged
         self.assertEqual(self.labels(2), Q)
+        self.assertIn("PR #101 stays ralph:in-review", self.forge.comments[1][-1][1])
         self.assertEqual([p["state"] for p in self.forge.prs.values()], ["open"])
         for n in (1, 2):
             self.assertFalse(self.worktree(n).exists())
         self.assertEqual(self.forge.merges, [])
+
+    def immediate_stop_with_a_session_in_flight(self):
+        """Ticket 2 is mid-session (a real process group) when ticket 1 asks for the immediate stop."""
+        sleeper_started = threading.Event()
+        sleepers = []
+
+        def implementer(request):
+            if number_of(request) == 1:
+                if not sleeper_started.wait(WAIT):
+                    raise AssertionError("ticket 2 never started its session")
+                self.stop.request_immediate()
+                return SessionResult(text="RALPH:DONE")
+            proc = self.stop.sessions.spawn(["sleep", "600"])
+            sleepers.append(proc)
+            sleeper_started.set()
+            return SessionResult(returncode=proc.wait())
+
+        return implementer
+
+    def test_a_ticket_whose_pr_cannot_be_read_at_the_stop_is_left_alone_and_the_other_is_still_requeued(self) -> None:
+        real = self.forge.find_pr
+
+        def flaky(*, head: str, base: str):
+            if self.stop.immediate and head.endswith("ticket-1"):
+                raise RuntimeError("api down")
+            return real(head=head, base=base)
+
+        self.forge.find_pr = flaky  # type: ignore[method-assign]
+        self.go(ticket(1), ticket(2), parallel=2, implementer=self.immediate_stop_with_a_session_in_flight())
+        self.assertEqual(self.labels(1), frozenset({"ralph:in-progress"}))  # fail closed: a later run reconciles it
+        self.assertEqual(self.labels(2), Q)
+
+    def test_a_redone_ticket_whose_old_pr_was_closed_is_requeued_by_an_immediate_stop(self) -> None:
+        self.forge.prs[101] = {"head": "feat/52-ticket-1", "base": INTEGRATION, "state": "closed"}
+
+        def implementer(request):
+            self.stop.request_immediate()
+            return SessionResult(returncode=-signal.SIGTERM)
+
+        self.go(ticket(1), implementer=implementer)
+        self.assertEqual(self.labels(1), Q)  # a closed PR is not an open one
+        self.assertIn("requeued for retry", self.forge.comments[1][0][1])
+
+    def test_an_immediate_stop_kills_a_running_verify_command_and_requeues_the_ticket(self) -> None:
+        started = self.repo.root / "verify-started"
+        self.verify = (f"touch {started}; exec sleep 600",)
+
+        def stop_once_verify_runs() -> None:
+            deadline = time.monotonic() + WAIT
+            while not started.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)  # waiting for an external process: there is no event to join
+            self.stop.request_immediate()
+
+        watcher = threading.Thread(target=stop_once_verify_runs, daemon=True)
+        watcher.start()
+        began = time.monotonic()
+        result = self.go(ticket(1))
+        watcher.join()
+        self.assertEqual(result.reason, "stopped by operator (immediate)")
+        self.assertLess(time.monotonic() - began, WAIT)  # the 600s verify was killed, not awaited
+        self.assertEqual(self.labels(1), Q)
+        self.assertFalse(self.worktree(1).exists())
 
     def test_a_session_killed_by_the_stop_never_marks_its_ticket_failed(self) -> None:
         def implementer(request):
@@ -269,9 +336,64 @@ class StopResumeTest(unittest.TestCase):
         self.repo.git("merge-base", "--is-ancestor", integration_tip, f"origin/{INTEGRATION}")  # same branch, grown
         self.assertTrue(self.final_review_ran())
 
+    def pr(self, n: int, state: str) -> int:
+        number = 100 + len(self.forge.prs) + 1
+        self.forge.prs[number] = {"head": f"feat/52-ticket-{n}", "base": INTEGRATION, "state": state}
+        return number
+
+    def test_the_latest_pr_of_a_ticket_wins_at_startup(self) -> None:
+        self.pr(1, "closed")
+        self.pr(1, "merged")
+        result = self.go(Issue(1, "one", frozenset({"ralph:in-review"})))
+        self.assertEqual(result.exit_code, EXIT_OK)
+        self.assertEqual(self.forge.ralph_trail(1), [["ralph:in-review"], ["ralph:integrated"]])
+        self.assertEqual(self.implemented, [])
+        self.assertTrue(self.forge.comments[1])  # the human merge is explained on the ticket
+
+    def test_tickets_that_are_not_left_over_from_a_run_are_never_touched_at_startup(self) -> None:
+        result = self.go(
+            ticket(1),
+            Issue(2, "failed", frozenset({"ralph:failed:issue"})),
+            Issue(3, "integrated", frozenset({"ralph:integrated"})),
+            Issue(4, "closed in review", frozenset({"ralph:in-review"}), state="closed"),
+        )
+        self.assertNotEqual(result.exit_code, EXIT_OK)  # ticket 2 is left for a human
+        self.assertEqual(self.implemented, [1])
+        for n in (2, 3, 4):
+            self.assertNotIn(n, self.forge.label_trail)
+
+    def test_a_ticket_whose_pr_cannot_be_read_at_startup_is_left_exactly_as_it_is(self) -> None:
+        real = self.forge.latest_pr
+
+        def flaky(*, head: str, base: str):
+            if head.endswith("ticket-1"):
+                raise RuntimeError("api down")
+            return real(head=head, base=base)
+
+        self.forge.latest_pr = flaky  # type: ignore[method-assign]
+        result = self.go(Issue(1, "one", frozenset({"ralph:in-review"})), ticket(2))
+        self.assertNotEqual(result.exit_code, EXIT_OK)
+        self.assertEqual(self.labels(1), frozenset({"ralph:in-review"}))
+        self.assertEqual(self.implemented, [2])
+        self.assertIn("ralph:integrated", self.labels(2))
+
+    def test_an_in_progress_ticket_with_an_open_pr_goes_to_review_and_is_resumed(self) -> None:
+        self.repo.git("checkout", "-b", "work", "main")
+        (self.repo.checkout / "ticket-1.txt").write_text("done\n")
+        self.repo.git("add", "-A")
+        self.repo.git("commit", "-m", "feat: ticket 1")
+        self.repo.git("push", "origin", "work:refs/heads/feat/52-ticket-1")
+        self.repo.git("checkout", "main")
+        self.pr(1, "open")
+        result = self.go(Issue(1, "one", frozenset({"ralph:in-progress"})))
+        self.assertEqual(result.exit_code, EXIT_OK)
+        self.assertEqual(self.implemented, [])  # not implemented again: its PR went through gate and merge
+        self.assertEqual(
+            self.forge.ralph_trail(1), [["ralph:in-progress"], ["ralph:in-review"], ["ralph:integrated"]]
+        )
+
     def test_a_pr_merged_or_closed_by_a_human_while_no_conductor_ran_is_reconciled(self) -> None:
-        def pr(n: int, state: str) -> None:
-            self.forge.prs[100 + n] = {"head": f"feat/52-ticket-{n}", "base": INTEGRATION, "state": state}
+        pr = self.pr
 
         pr(1, "merged")
         pr(2, "closed")

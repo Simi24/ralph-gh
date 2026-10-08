@@ -4,7 +4,6 @@ from pathlib import Path
 
 from conductor.config import Config
 from conductor.exploration import notes_path
-from conductor.gate_scope import Scope, resolve_gate_scope
 from conductor.git_adapter import GitCli
 from conductor.ports import Issue, SessionResult
 from conductor.run import EXIT_INCOMPLETE, EXIT_OK, run
@@ -200,6 +199,52 @@ class FallbackToFullReviewTest(FinalFixBase):
         self.go([FAIL, PASS])
         self.assertNotIn("RE-REVIEW", self.second_review())
 
+    def wipe_verdict_before_the_second_review(self, wipe) -> None:
+        """The saved verdict is tampered with between the fix round and the re-review."""
+        verdict = self.repo.state_root / f"prd-{PRD}" / "final" / "verdict-round-1.md"
+        calls: list[int] = []
+
+        def head(number: int) -> str:
+            calls.append(number)
+            if len(calls) == 2:  # the top of round 2: the verdict was saved at the end of round 1
+                wipe(verdict)
+            return self.origin_head()
+
+        self.forge.pr_head_sha = head  # type: ignore[method-assign]
+
+    def test_an_emptied_previous_verdict_gets_a_full_review(self) -> None:
+        self.wipe_verdict_before_the_second_review(lambda path: path.write_text(""))
+        self.go([FAIL, PASS])
+        self.assertNotIn("RE-REVIEW", self.second_review())
+
+    def test_a_deleted_previous_verdict_gets_a_full_review(self) -> None:
+        self.wipe_verdict_before_the_second_review(lambda path: path.unlink())
+        self.go([FAIL, PASS])
+        self.assertNotIn("RE-REVIEW", self.second_review())
+
+    def test_a_reviewed_head_that_cannot_be_fetched_gets_a_full_review(self) -> None:
+        heads = iter([self.repo.git("rev-parse", "origin/main")] + ["b" * 40] * 10)
+        self.forge.pr_head_sha = lambda number: next(heads)  # type: ignore[method-assign]
+        self.go([FAIL, PASS])
+        self.assertNotIn("RE-REVIEW", self.second_review())
+
+    def test_a_head_that_is_not_a_sha_never_reaches_a_review_or_git(self) -> None:
+        for name, heads in [
+            ("first review", ["--upload-pack=x"]),
+            ("re-review", [self.repo.git("rev-parse", "origin/main"), "HEAD"]),
+            ("short sha", ["abc123"]),
+        ]:
+            with self.subTest(name):
+                self.repo.cleanup()
+                self.setUp()
+                queue = iter(heads + [heads[-1]] * 10)
+                self.forge.pr_head_sha = lambda number: next(queue)  # type: ignore[method-assign]
+                result = self.go([FAIL, PASS])
+                self.assertEqual(result.exit_code, EXIT_INCOMPLETE)
+                self.assertEqual(result.reason, "final review not started: reviewed head commit unknown")
+                self.assertEqual(self.final_pr()["state"], "open")
+                self.assertLessEqual(len(self.sessions("final-review")), 1)
+
     def test_a_previous_verdict_that_cannot_be_saved_gets_a_full_review(self) -> None:
         self.track_real_head()
         config_state = self.repo.state_root
@@ -208,63 +253,6 @@ class FallbackToFullReviewTest(FinalFixBase):
         final_dir.write_text("a file where the directory should be")
         self.go([FAIL, PASS])
         self.assertNotIn("RE-REVIEW", self.second_review())
-
-
-class ResolveGateScopeTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.repo = TempRepo()
-        self.addCleanup(self.repo.cleanup)
-        self.git = GitCli(self.repo.checkout)
-        self.base = self.repo.git("rev-parse", "HEAD")
-        (self.repo.checkout / "a.txt").write_text("a\n")
-        self.repo.git("add", "-A")
-        self.repo.git("commit", "-m", "a")
-        self.child = self.repo.git("rev-parse", "HEAD")
-        self.repo.git("push", "origin", "HEAD:refs/heads/work")
-        self.repo.git("checkout", "-b", "side", self.base)
-        (self.repo.checkout / "b.txt").write_text("b\n")
-        self.repo.git("add", "-A")
-        self.repo.git("commit", "-m", "b")
-        self.sibling = self.repo.git("rev-parse", "HEAD")
-        self.repo.git("push", "origin", "HEAD:refs/heads/side")
-        self.verdict = self.repo.root / "verdict.md"
-        self.verdict.write_text("FAIL\n")
-
-    def scope(self, *, round_no=2, prev=None, head=None, verdict="default") -> Scope:
-        return resolve_gate_scope(
-            self.git,
-            round_no=round_no,
-            prev_sha=prev or self.base,
-            head_sha=head or self.child,
-            prev_verdict=self.verdict if verdict == "default" else verdict,
-        )
-
-    def test_a_trusted_fix_gets_the_fix_diff(self) -> None:
-        self.assertIs(self.scope(), Scope.FIX_DIFF)
-
-    def test_the_first_round_is_always_full(self) -> None:
-        self.assertIs(self.scope(round_no=1), Scope.FULL)
-
-    def test_a_missing_or_empty_previous_verdict_is_full(self) -> None:
-        self.assertIs(self.scope(verdict=None), Scope.FULL)
-        self.assertIs(self.scope(verdict=self.repo.root / "absent.md"), Scope.FULL)
-        self.verdict.write_text("")
-        self.assertIs(self.scope(), Scope.FULL)
-
-    def test_an_unchanged_head_is_full(self) -> None:
-        self.assertIs(self.scope(prev=self.child, head=self.child), Scope.FULL)
-
-    def test_a_non_ancestor_is_full(self) -> None:
-        self.assertIs(self.scope(prev=self.sibling, head=self.child), Scope.FULL)
-        self.assertIs(self.scope(prev=self.child, head=self.base), Scope.FULL)
-
-    def test_invalid_shas_are_full_and_never_reach_git(self) -> None:
-        self.assertIs(self.scope(prev="--upload-pack=x", head=self.child), Scope.FULL)
-        self.assertIs(self.scope(prev=self.base, head="HEAD"), Scope.FULL)
-        self.assertIs(self.scope(prev=self.base[:10], head=self.child), Scope.FULL)
-
-    def test_a_head_that_cannot_be_fetched_is_full(self) -> None:
-        self.assertIs(self.scope(head="b" * 40), Scope.FULL)
 
 
 if __name__ == "__main__":
