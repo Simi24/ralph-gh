@@ -1,6 +1,7 @@
 import unittest
 
 from conductor.config import Config
+from conductor.exploration import notes_path
 from conductor.git_adapter import GitCli
 from conductor.ports import Blocker, Issue
 from conductor.run import EXIT_INCOMPLETE, EXIT_OK, EXIT_STARTUP_ERROR, run
@@ -35,6 +36,10 @@ class FrontierTest(unittest.TestCase):
         config = Config(verify_commands=("true",)).with_run(
             prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root
         )
+        # Exploration is covered in test_exploration.py; here the notes already exist.
+        notes = notes_path(config)
+        notes.parent.mkdir(parents=True, exist_ok=True)
+        notes.write_text("notes")
         return run(config, self.forge, self.agents, GitCli(self.repo.checkout))
 
     def order(self) -> list[str]:
