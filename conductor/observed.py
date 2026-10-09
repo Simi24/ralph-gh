@@ -32,6 +32,7 @@ class ObservedForge:
     def __init__(self, inner: Any, observer: "Observer") -> None:
         self._inner = inner
         self._obs = observer
+        self._tickets: dict[int, int] = {}  # PR number -> ticket, for ticket-branch PRs only
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -44,13 +45,26 @@ class ObservedForge:
 
     def create_pr(self, *, head: str, base: str, title: str, body: str, draft: bool = False) -> PullRequest:
         pr = self._inner.create_pr(head=head, base=base, title=title, body=body, draft=draft)
+        self._remember(pr)
         self._obs.event(_ticket_of_branch(head), f"PR #{pr.number} opened ({head} -> {base})")
         return pr
 
+    def find_pr(self, *, head: str, base: str) -> PullRequest | None:
+        return self._remember(self._inner.find_pr(head=head, base=base))
+
+    def latest_pr(self, *, head: str, base: str) -> PullRequest | None:
+        return self._remember(self._inner.latest_pr(head=head, base=base))
+
     def merge_pr(self, number: int, *, method: str, head_sha: str) -> bool:
         merged = self._inner.merge_pr(number, method=method, head_sha=head_sha)
-        self._obs.event(None, f"PR #{number} {'merged' if merged else 'merge refused'} ({method})")
+        self._obs.event(self._tickets.get(number), f"PR #{number} {'merged' if merged else 'merge refused'} ({method})")
         return merged
+
+    def _remember(self, pr: PullRequest | None) -> PullRequest | None:
+        ticket = _ticket_of_branch(pr.head) if pr else None
+        if pr and ticket is not None:
+            self._tickets[pr.number] = ticket
+        return pr
 
 
 class ObservedAgents:

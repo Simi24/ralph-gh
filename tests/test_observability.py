@@ -144,11 +144,20 @@ class ObservedRunTest(unittest.TestCase):
             "#54 PR #101 opened",
             "#54 in review",
             "#54 ticket-gate session started",
-            "PR #101 merged",
+            "#54 PR #101 merged (merge)",
             "#54 integrated",
             "run ended: final review passed, merge withheld: autonomy=halt-each-pr",
         ):
             self.assertIn(expected, text)
+
+    def test_final_pr_merge_names_the_prd_not_a_ticket(self) -> None:
+        self.config = self.config.with_run(
+            prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root, autonomy="respect-hitl-arch"
+        )
+        self.observed_run(self.agents())
+        (comment,) = self.forge.list_comments(PRD)
+        self.assertRegex(comment.body, r"PRD PR #\d+ merged \(squash\)")
+        self.assertNotRegex(comment.body, r"#54 PR #\d+ merged \(squash\)")
 
     def test_failure_and_blocked_are_status_lines(self) -> None:
         self.observed_run(self.agents(implementer=says("stuck\nRALPH:BLOCKED nope")))
