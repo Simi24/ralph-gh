@@ -173,7 +173,9 @@ export const register: Register = on => {
       await update($, issues, () => null)
     }
     await refresh($, true)
-    startWatching($)
+    // No repository found here: show why, but start no timer (it would retry `gh` every poll).
+    if (await read($, repo)) startWatching($)
+    else stopWatching($)
     await $.ui.open({ id: PANE, title: 'ralph-gh' })
     const name = await read($, repo)
     return { text: name ? `Watching ralph-gh runs of ${name}.` : 'No GitHub repository found here; use /ralph owner/repo.' }
@@ -209,7 +211,11 @@ export const register: Register = on => {
       return (
         <Box flexDirection="column">
           <Text bold>ralph-gh · {name ?? 'no repository'}</Text>
-          <Text dimColor>No run recorded yet. Start one with `ralph-gh run --prd N`.</Text>
+          {name ? (
+            <Text dimColor>No ralph-gh run recorded for this repository yet. Watching for one: start it with `ralph-gh run --prd N`.</Text>
+          ) : (
+            <Text dimColor>This directory is not a GitHub repository, so nothing is watched. Use /ralph owner/repo.</Text>
+          )}
         </Box>
       )
     }
