@@ -22,6 +22,7 @@ export type Board = {
   endedTone?: Tone
   recent: string[]
   lines: number
+  statusLines: number // `[status]` lines seen, of which `recent` keeps the last few
 }
 
 export type IssueTicket = { number: number; title: string; state: string; labels: string[] }

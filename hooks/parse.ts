@@ -40,7 +40,7 @@ export function parseRun(log: string): Board | null {
   })
   if (start < 0) return null
 
-  const board: Board = { session: SESSION.exec(all[start])![1], prdStage: 0, tickets: [], recent: [], lines: all.length }
+  const board: Board = { session: SESSION.exec(all[start])![1], prdStage: 0, tickets: [], recent: [], lines: all.length, statusLines: 0 }
   const tickets = new Map<number, TicketRow>()
   for (const line of all.slice(start + 1)) {
     const prd = PRD.exec(line)
@@ -51,6 +51,7 @@ export function parseRun(log: string): Board | null {
     if (!status) continue
     const [, at, number, text] = status
     const ticket = number && Number(number) !== board.prd ? number : undefined // `#<prd> verify started` is PRD-level
+    board.statusLines++
     board.recent = [...board.recent, `${number ? `#${number}` : 'PRD'} ${text}`].slice(-6)
     if (ticket) {
       const n = Number(ticket)
@@ -84,7 +85,8 @@ export function parseRun(log: string): Board | null {
 /** The lines worth a toast among those added since the previous poll. */
 export function notable(previous: Board | null, next: Board): string[] {
   if (!previous || previous.session !== next.session) return []
-  const fresh = next.recent.slice(Math.max(0, next.recent.length - Math.max(0, next.lines - previous.lines)))
+  const added = Math.min(next.recent.length, Math.max(0, next.statusLines - previous.statusLines))
+  const fresh = added > 0 ? next.recent.slice(-added) : []
   return fresh.filter(line => /\b(integrated|failed|blocked|RED|repaired|run ended)\b/.test(line))
 }
 

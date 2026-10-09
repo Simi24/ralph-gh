@@ -95,6 +95,22 @@ test('toasts only what is new in the same run', () => {
   expect(parseRun('nothing here')).toBeNull()
 })
 
+test('non-status lines appended after a toasted event do not re-toast it', () => {
+  const before = parseRun(`${RUN}
+2026-10-08T18:09:31+02:00 [status] #3 integrated`)!
+  const after = parseRun(`${RUN}
+2026-10-08T18:09:31+02:00 [status] #3 integrated
+2026-10-08T18:09:40+02:00 [stop] draining
+2026-10-08T18:09:41+02:00 merge of PR #4 refused:
+head moved`)!
+  expect(notable(before, after)).toEqual([])
+  const more = parseRun(`${RUN}
+2026-10-08T18:09:31+02:00 [status] #3 integrated
+2026-10-08T18:09:40+02:00 [stop] draining
+2026-10-08T18:09:42+02:00 [status] #4 dispatched`)!
+  expect(notable(before, more)).toEqual([])
+})
+
 test('a PRD-level status line that names the PRD is no ticket row', () => {
   const board = parseRun(`2026-10-08T18:06:57+02:00 ralph-gh session: s1
 2026-10-08T18:06:57+02:00 PRD: #1

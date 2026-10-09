@@ -24,7 +24,7 @@ function fifty(): { board: Board; issues: Issues } {
     blockers[String(n)] = n <= 20 ? [{ number: 3, inPrd: true, closed: false }] : [{ number: 11, inPrd: true, closed: false }]
   }
   const board: Board = {
-    session: 's', prd: 99, prdStage: 1, recent: [], lines: 1,
+    session: 's', prd: 99, prdStage: 1, recent: [], lines: 1, statusLines: 0,
     tickets: [row(11, 'run'), row(12, 'run', 4), row(13, 'run', 1), row(14, 'bad')],
   }
   return { board, issues: { prd: 99, title: 'big', tickets, blockers } }
