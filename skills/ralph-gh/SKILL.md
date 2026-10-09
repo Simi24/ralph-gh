@@ -5,16 +5,16 @@ description: Run the ralph-gh conductor on a PRD in the current repo. It works t
 
 # /ralph-gh
 
-This skill is a thin wrapper around the installed `ralph-gh` launcher (`${CLAUDE_CONFIG_DIR:-$HOME/.claude}/ralph-gh/ralph-gh`). The conductor is the real implementation — read `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/ralph-gh/README.md` for the full design.
+This skill is a thin wrapper around the installed `ralph-gh` launcher (`${CLAUDE_PLUGIN_ROOT}/ralph-gh`, inside the installed plugin). The conductor is the real implementation — read `${CLAUDE_PLUGIN_ROOT}/README.md` for the full design.
 
 ## What to do
 
-1. Verify you are in a git repo and `.ralph-gh.toml` exists at the repo root. If it is missing, tell the user to copy `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/ralph-gh/example.ralph-gh.toml` to `<repo>/.ralph-gh.toml` and edit it — do NOT generate one yourself. If only an old `.ralph-gh.config` exists, the conductor refuses to start and prints the old-to-new key table: show it to the user.
+1. Verify you are in a git repo and `.ralph-gh.toml` exists at the repo root. If it is missing, tell the user to copy `${CLAUDE_PLUGIN_ROOT}/example.ralph-gh.toml` to `<repo>/.ralph-gh.toml` and edit it — do NOT generate one yourself. If only an old `.ralph-gh.config` exists, the conductor refuses to start and prints the old-to-new key table: show it to the user.
 2. Make sure the user named a PRD: the command needs `--prd N`. If `$ARGUMENTS` has no `--prd`, ask for the PRD issue number instead of guessing.
 3. Run the conductor, forwarding `$ARGUMENTS` verbatim:
 
 ```bash
-"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/ralph-gh/ralph-gh" run $ARGUMENTS
+"${CLAUDE_PLUGIN_ROOT}/ralph-gh" run $ARGUMENTS
 ```
 
 4. While it runs it prints progress. When it exits, show the user the contents of `last-run.md`. It lives in the per-repo state directory, **not** in the repo:

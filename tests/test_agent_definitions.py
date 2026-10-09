@@ -6,7 +6,7 @@ from pathlib import Path
 from conductor.config import parse_config
 from conductor.preflight import find_agent
 
-AGENTS = Path(__file__).resolve().parent.parent / "agents"
+AGENTS = Path(__file__).resolve().parent.parent / "worker-bundle" / "agents"
 
 
 class AgentDefinitionsTest(unittest.TestCase):

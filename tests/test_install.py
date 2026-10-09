@@ -49,7 +49,7 @@ class InstallTest(unittest.TestCase):
         self.assertTrue(os.access(dest / "ralph-gh", os.X_OK))
         for module in (REPO / "conductor").glob("*.py"):
             self.assertEqual((dest / "conductor" / module.name).read_bytes(), module.read_bytes())
-        for agent in (REPO / "agents").glob("*.md"):
+        for agent in (REPO / "worker-bundle/agents").glob("*.md"):
             self.assertEqual((config / "agents" / agent.name).read_bytes(), agent.read_bytes())
         self.assertEqual((config / "skills/ralph-gh/SKILL.md").read_bytes(), (REPO / "skills/ralph-gh/SKILL.md").read_bytes())
         self.assertTrue((dest / "example.ralph-gh.toml").is_file())
