@@ -9,7 +9,7 @@ const LOG_TWO = `${LOG_ONE}2026-10-08T18:08:23+02:00 [status] #2 integrated
 const DIR = '/cfg/ralph-gh/state/o__r'
 
 /** Hooks beneath the plugin: a log that can grow, and a record of every file read, write and process run. */
-function world(on: any, ghWorks = true) {
+function world(on: any, ghWorks = true, hold?: { gate?: Promise<void> }) {
   const seen = { reads: [] as string[], writes: [] as string[], runs: [] as string[][], toasts: [] as string[], status: [] as unknown[] }
   const files = { log: LOG_ONE }
   mock.env(on, { CLAUDE_CONFIG_DIR: '/cfg', HOME: '/home' })
@@ -25,6 +25,7 @@ function world(on: any, ghWorks = true) {
   })
   on('process.run', async (_$: any, e: any) => {
     seen.runs.push(e.argv)
+    await hold?.gate
     const url = e.argv.find((a: string) => a.startsWith('repos/')) ?? ''
     const out = url.endsWith('/sub_issues?per_page=100') ? '[]' : url.includes('/issues/1') ? 'PRD: demo' : ''
     return { value: { exitCode: ghWorks ? 0 : 1, stdout: ghWorks ? out : '', stderr: '' } }
@@ -124,4 +125,29 @@ test('without GitHub data the pane still draws from run.log alone', async ($, on
   const pane = await $.ui.mount({ plugin: 'ralph-gh', surface: 'terminal', component: 'Pane', props: {} as never, requestId: 'ralph-board' })
   expect(await pane.find({ text: /#2/ })).toBeDefined()
   expect(w.seen.writes).toEqual([])
+})
+
+/** A poll whose `gh` call is held while the watch ends, then released: it must not touch the status line or toasts. */
+async function lateAfter(end: ($: any) => Promise<unknown>, $: any, on: any) {
+  const hold: { gate?: Promise<void> } = {}
+  const w = world(on, true, hold)
+  await $.command.run({ command: 'ralph', args: 'o/r' } as never)
+  w.files.log = LOG_TWO
+  let release = () => {}
+  hold.gate = new Promise<void>(resolve => (release = resolve))
+  await w.clock.advance(3000) // the poll sees the new event and waits on gh
+  await end($)
+  const toasts = w.seen.toasts.length
+  release()
+  await w.clock.advance(3000)
+  expect(w.seen.status.at(-1)).toBeUndefined()
+  expect(w.seen.toasts.length).toBe(toasts)
+}
+
+test('a poll still waiting on gh when /ralph off runs sets no status and no toast', async ($, on) => {
+  await lateAfter($ => $.command.run({ command: 'ralph', args: 'off' } as never), $, on)
+})
+
+test('a poll still waiting on gh when the pane closes sets no status and no toast', { plugins: [CLOSER] }, async ($, on) => {
+  await lateAfter($ => $.command.run({ command: 'closepane', args: '' } as never), $, on)
 })

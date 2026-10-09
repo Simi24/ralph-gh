@@ -34,6 +34,7 @@ const showWaiting = atom({ plugin: 'ralph-gh', key: 'showWaiting' } as const, fa
 const clock = atom({ plugin: 'ralph-gh', key: 'now' } as const, null)
 
 let timer: Timer | undefined // set only while watching
+let watch = 0 // bumped when watching ends, so a poll still waiting on `gh` knows it is stale
 let busy = false // a refresh that reads fifty tickets' blockers outlasts a poll interval
 
 async function gh($: Engine, argv: string[]): Promise<string | null> {
@@ -97,6 +98,7 @@ async function readIssues($: Engine, name: string, prd: number, known: Issues | 
 async function refresh($: Engine, opening = false): Promise<void> {
   if (busy) return
   busy = true
+  const generation = watch
   try {
     let name = await read($, repo)
     if (!name) {
@@ -114,12 +116,14 @@ async function refresh($: Engine, opening = false): Promise<void> {
     const known = await read($, issues)
     if (next?.prd !== undefined && (opening || known?.prd !== next.prd || !isUnchanged)) {
       const fresh = await readIssues($, name, next.prd, known) // only on open or on a new event
+      if (generation !== watch) return // watching ended meanwhile: touch nothing
       if (fresh) await update($, issues, () => fresh)
     }
 
     // Every poll moves the clock, so a step that has no new event still shows its running time.
     const tick = await $.clock.now()
     await update($, clock, () => tick)
+    if (generation !== watch) return
     if (isUnchanged) return
     for (const line of next ? notable(previous, next) : []) $.ui.toast(`ralph ${line}`)
     $.ui.status(next ? summary(next) : undefined)
@@ -148,6 +152,7 @@ function startWatching($: Engine): void {
 }
 
 function stopWatching($: Engine): void {
+  watch += 1
   timer?.cancel()
   timer = undefined
   $.ui.status(undefined)
