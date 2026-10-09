@@ -29,3 +29,17 @@ Any diff touching one of these is Tier 3 (full empirical verification) in the ga
 - Conventional commits, English everywhere (code comments, docs, commits, PRs).
 - Keep README.md, example.ralph-gh.toml and the agent/skill markdown in sync with behavior changes — the docs are part of the product.
 - The installed copy in `~/.claude/ralph-gh/` is a deployment of this repo, not a separate thing: changes here are the source of truth.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on `Simi24/ralph-gh`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`), kept separate from the loop's `ralph:*` labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` + `docs/adr/` at the repo root, created lazily. See `docs/agents/domain.md`.
