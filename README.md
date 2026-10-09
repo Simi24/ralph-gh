@@ -73,7 +73,7 @@ This repository is a Claude Code marketplace that lists one plugin, `ralph-gh`:
 
 The plugin ships the conductor, its `ralph-gh` launcher, the `/ralph-gh` skill and the `/ralph` dashboard. `/ralph-gh run --prd N` starts the conductor from the installed plugin (`${CLAUDE_PLUGIN_ROOT}/ralph-gh`), which finds its own package relative to where it is installed: no path to configure. Update with `claude plugin update`. The two reviewer agents live in `worker-bundle/agents/`, a folder the plugin does not load, so they never show up in interactive sessions.
 
-To develop on ralph-gh, add the working copy as a folder marketplace (`/plugin marketplace add /path/to/ralph-gh`) and install from it; it reads the files in place. `claude plugin validate .` checks the manifests and `claude plugin test .` runs the dashboard's hook tests (`tests/dashboard/*.test.ts`); both are part of this repo's verify commands. The `install.sh` route below stays until the plugin fully replaces it.
+To develop on ralph-gh, add the working copy as a folder marketplace (`/plugin marketplace add /path/to/ralph-gh`) and install from it; it reads the files in place. `claude plugin validate .` checks the manifests and `claude plugin test .` runs the dashboard's hook tests (`tests/dashboard/*.test.ts`); both are part of this repo's verify commands.
 
 ### The `/ralph` dashboard
 
@@ -81,33 +81,27 @@ To develop on ralph-gh, add the working copy as a folder marketplace (`/plugin m
 
 The pane shows the PRD's pipeline and the integration branch's state, a progress bar with counts (done, in flight, need attention, ready, waiting, not queued), the tickets in flight as pipelines with title, PR and elapsed time, the ones that need attention, the next ready tickets, and collapsible waiting and done groups. Toasts and a status line appear only while watching. The **Drain** button writes the `STOP` file of the watched repo's state dir (the same file `ralph-gh stop` writes) and nothing else. The code is in `hooks/` (`parse.ts` and `plan.ts` are pure modules, `register.tsx` is the hooks module).
 
-## Install with install.sh
+### Run it from a terminal
 
+Inside Claude Code the `/ralph-gh` skill starts runs. To also have `ralph-gh run` and `ralph-gh stop` in a terminal, take this one step after installing the plugin. It writes a small `ralph-gh` command into `~/.local/bin` (put that on your `PATH`) that always runs the newest installed plugin's conductor, so `claude plugin update` needs no repeat:
+
+<!-- terminal-launcher -->
 ```bash
-git clone <this-repo>
-cd ralph-gh
-./install.sh
-
-# optional alias (the installer prints the exact line)
-echo 'alias ralph-gh="$HOME/.claude/ralph-gh/ralph-gh"' >> ~/.zshrc
+mkdir -p ~/.local/bin && cat > ~/.local/bin/ralph-gh <<'EOF'
+#!/usr/bin/env bash
+cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+launcher="$(ls -d "$cfg"/plugins/cache/ralph-gh/ralph-gh/*/ralph-gh 2>/dev/null | sort -V | tail -n1)"
+[ -n "$launcher" ] || { echo "ralph-gh: plugin not installed: run /plugin install ralph-gh --marketplace Simi24/ralph-gh in Claude Code" >&2; exit 1; }
+exec "$launcher" "$@"
+EOF
+chmod +x ~/.local/bin/ralph-gh
 ```
 
-`install.sh` deploys, under `$CLAUDE_CONFIG_DIR` (default `~/.claude`): the `conductor/` package and the `ralph-gh` launcher into `ralph-gh/`, the two agents into `agents/`, and the `/ralph-gh` skill into `skills/ralph-gh/`. The skill lets you type `/ralph-gh --prd N ...` inside an interactive Claude Code session and have the session drive the conductor for you.
+### Moving from `install.sh`
+
+`install.sh` is now a migration stub: it prints the plugin install command and what to remove, installs and deletes nothing, and exits non-zero. The conductor also looks for a legacy installation under `$CLAUDE_CONFIG_DIR` (default `~/.claude`) at the start of a run: the `ralph-gh/conductor` package and launcher, `skills/ralph-gh`, and the two reviewer agents in `agents/`. It never uses what it finds; it prints a warning with the exact `rm -rf` lines and goes on. Keep `ralph-gh/state`: the plugin uses the same run state. The drift check and `version.txt` copying are gone, because `claude plugin update` replaces them.
 
 Requires: **Python 3.12+** (standard library only, nothing to `pip install`), `claude` (Claude Code CLI), `git`, and `gh` authenticated as a collaborator with **push** and **triage** permission — or higher — on the repo, so it can push branches, merge PRs, and create/edit `ralph:*` labels. Preflight checks all of this for real at startup and exits before spawning any session if something is missing.
-
-## Updating
-
-The copies under `~/.claude/` are a **deployment** of this repo, not a separate thing — a `git pull` alone changes nothing your runs actually use. Redeploy after every pull:
-
-```bash
-git pull
-./install.sh
-```
-
-`install.sh` overwrites the installed copy and, for every installed file that differs from the clone's, first saves the old version as `*.bak` (`config.py.bak`, `ralph-gate-reviewer.md.bak`, ...). Files an older version installed and this one no longer ships (the bash orchestrator `ralph-gh.sh`, its `CLAUDE.md` iteration prompt, the `ralph-refactorer` agent, modules removed from the package) are moved aside as `.bak` too, so nothing stale stays active.
-
-Each install stamps the clone's path and commit SHA into `ralph-gh/.installed`. If you `git pull` and then start a run without reinstalling, the conductor notices its installed copy is behind that clone and prints one line at startup (`WARNING: installed copy is behind your clone (<sha> -> <sha>) — run install.sh`) — advisory only, it never blocks the run, and it fails open when the clone is gone or not a git checkout. It never touches the network.
 
 ## Per-repo setup (one time)
 
@@ -236,7 +230,7 @@ On a match:
 
 ## Releases
 
-Tags and changelogs are automated with [release-please](https://github.com/googleapis/release-please): every push to `main` updates a standing release PR built from the conventional-commit history, and merging it cuts a GitHub release, bumps `version.txt`, and appends to `CHANGELOG.md` — nothing to run by hand. `install.sh` copies `version.txt` next to the launcher (and removes a stale one when your clone has none), so an installed copy always says which cut it is. Because the final PR is squash-merged, each PRD lands on the base branch as one conventional commit, which is what release-please reads.
+Tags and changelogs are automated with [release-please](https://github.com/googleapis/release-please): every push to `main` updates a standing release PR built from the conventional-commit history, and merging it cuts a GitHub release, bumps the version (including the plugin manifest, which is how `claude plugin update` sees a new release), and appends to `CHANGELOG.md` — nothing to run by hand. Because the final PR is squash-merged, each PRD lands on the base branch as one conventional commit, which is what release-please reads.
 
 ## Recommended companions
 

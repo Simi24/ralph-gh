@@ -4,7 +4,6 @@ import contextlib
 import io
 import json
 import os
-import shutil
 import stat
 import subprocess
 import sys
@@ -166,17 +165,21 @@ class CliProcessTest(unittest.TestCase):
         self.assertEqual(done.returncode, 1)
         self.assertIn("preflight failed: labels", done.stderr)
 
-    def test_run_warns_when_the_installed_copy_is_behind_but_still_runs(self) -> None:
+    def test_run_reports_a_legacy_installation_and_never_executes_it(self) -> None:
         self.write_config()
-        installed = self.tmp / "installed"
-        installed.mkdir()
-        shutil.copytree(REPO / "conductor", installed / "conductor", ignore=shutil.ignore_patterns("__pycache__"))
-        shutil.copytree(REPO / "worker-bundle", installed / "worker-bundle")
-        shutil.copy(self.launcher, installed / "ralph-gh")
-        (installed / ".installed").write_text(f"source_path={self.repo.checkout}\nsource_sha={'a' * 40}\n")
-        done = self.ralph("run", "--prd", "52", launcher=installed / "ralph-gh")
-        self.assertIn("WARNING: installed copy is behind your clone", done.stderr)
+        legacy = self.config_dir / "ralph-gh/conductor"
+        legacy.mkdir(parents=True)
+        (legacy / "__init__.py").write_text("raise SystemExit('legacy code ran')\n")
+        done = self.ralph("run", "--prd", "52")
+        self.assertIn("legacy install.sh installation", done.stderr)
+        self.assertIn(f"rm -rf '{legacy}'", done.stderr)
+        self.assertNotIn("legacy code ran", done.stderr)
         self.assertIn("PRD #52 has no sub-issues", done.stderr)  # advisory only: the run went on
+
+    def test_no_legacy_report_on_a_clean_config_dir(self) -> None:
+        self.write_config()
+        done = self.ralph("run", "--prd", "52")
+        self.assertNotIn("legacy", done.stderr)
 
 
 if __name__ == "__main__":
