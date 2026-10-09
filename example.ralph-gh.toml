@@ -1,0 +1,86 @@
+# .ralph-gh.toml — per-project configuration for ralph-gh
+# Copy this file to <repo-root>/.ralph-gh.toml and fill in.
+#
+# It is plain data, read with tomllib: nothing in it is evaluated. The only
+# values that ever run as shell commands are verify_commands and
+# preflight_command, which you author. Unknown keys and wrong types stop the
+# run at startup, before any session is spawned.
+#
+# Only verify_commands is required; every other key shows its default.
+
+# REQUIRED: commands run in order, in each ticket's worktree, to verify the
+# work (after a ticket's implementer, after every fix round). The first
+# non-zero exit counts as a verify failure and starts a fix round.
+verify_commands = [
+  "uv run ruff check .",
+  "uv run mypy src/",
+  "uv run pytest tests/unit/ -x -q",
+  "uv run pytest tests/integration/ -x -q",
+]
+
+# Branch naming: the integration branch is "<branch_prefix>/<prd>-<slug>" and
+# ticket branches are "<branch_prefix>/<prd>-ticket-<n>". Only [a-z0-9-].
+branch_prefix = "feat"
+
+# Base branch of the final PR (integration branch -> base). Default "main".
+base_branch = "main"
+
+# How many tickets are worked at once (one claude session each, plus verify and
+# gate). Each running ticket spends its own session usage, so this multiplies
+# how fast the subscription quota drains. `--parallel N` overrides it per run.
+parallel = 3
+
+# Fix rounds. On a verify failure or a ticket-gate FAIL a fix session runs and
+# the ticket is re-verified and re-gated, at most this many times (verify-fix
+# and gate-fix together), and then labelled ralph:failed:issue. The same number
+# bounds merge-fix attempts per ticket, final-review fix rounds and the
+# integration-fix rounds after a merge that breaks the integration branch.
+gate_fix_rounds = 2
+
+# Agents (claude --agent), looked up by frontmatter `name:` in the user agents
+# directory (~/.claude/agents, or $CLAUDE_CONFIG_DIR/agents) or the repo's
+# .claude/agents at startup. "plugin:name" is accepted for a plugin agent.
+# Set one when the repo has its own reviewer.
+reviewer_agent = "ralph-gate-reviewer"   # the final review of the whole PRD (Opus)
+ticket_gate_agent = "ralph-ticket-gate"  # the light acceptance-criteria gate per ticket (Sonnet)
+
+# Seconds before a hung claude session is killed (its whole process group), so
+# an unattended run never freezes. Default 7200.
+session_timeout = 7200
+
+# Docs that must stay in sync with behavior. Implementer, fix and final-fix
+# sessions get one line naming these paths ("docs that must stay in sync with
+# behavior: ..."), never their content. Default: none.
+doc_files = ["README.md"]
+
+# Model for writing sessions (exploration, implementer, fix, merge-fix,
+# integration-fix, final-fix), passed as `claude --model`. Unset by default: claude's own
+# default. Reviewer sessions never get --model: their agent definition pins it.
+# model = "claude-sonnet-5"
+
+# yolo autonomy only (see README): Python regexes matched with re.search
+# (UNANCHORED: "README\.md" also matches "docs/README.md", so anchor entries
+# with ^, as below) against every path of the final PR's diff. The final PR auto-merges only if EVERY changed
+# file matches at least one. An empty list means yolo never merges.
+yolo_allowlist = ['^(src/|tests/|docs/)', '^README\.md$']
+
+# Optional: a command run once at startup (e.g. start LocalStack). A non-zero
+# exit aborts the run before any session is spawned. Skipped when
+# preflight_health_url is already healthy.
+preflight_command = "docker compose up -d"
+
+# Optional: an HTTP URL polled once a second, up to preflight_health_retries
+# times, until it answers 200. If it never goes green the run aborts before
+# any session. Each attempt is capped at 3s to connect and 5s in total.
+preflight_health_url = "http://localhost:4566/_localstack/health"
+preflight_health_retries = 30
+
+# Usage limits (claude.ai subscription session/weekly quota, not API credit).
+# Detected reactively from a session's own output; there is no API to check
+# the remaining quota ahead of time.
+# false (default): on a hit the run parks in-flight tickets and exits (code 3),
+#   recording the reset time in last-run.md.
+# true: sleep usage_wait_seconds (a bounded ceiling, not a sleep-until-reset;
+#   the reset time is prose, not a reliable timestamp), then resume.
+wait_for_reset = false
+usage_wait_seconds = 1800
