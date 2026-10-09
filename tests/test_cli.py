@@ -171,6 +171,7 @@ class CliProcessTest(unittest.TestCase):
         installed = self.tmp / "installed"
         installed.mkdir()
         shutil.copytree(REPO / "conductor", installed / "conductor", ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(REPO / "worker-bundle", installed / "worker-bundle")
         shutil.copy(self.launcher, installed / "ralph-gh")
         (installed / ".installed").write_text(f"source_path={self.repo.checkout}\nsource_sha={'a' * 40}\n")
         done = self.ralph("run", "--prd", "52", launcher=installed / "ralph-gh")

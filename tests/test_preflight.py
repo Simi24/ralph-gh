@@ -17,6 +17,7 @@ class FakeEnv:
     labels: set[str] | None = field(default_factory=set)  # None = unreadable
     create_ok: bool = True
     agent_dirs: list[Path] = field(default_factory=list)
+    bundle_problem: str | None = None
     shell_rc: int = 0
     health: list[str | None] = field(default_factory=list)  # probe answers in order; None = healthy
     created: list[str] = field(default_factory=list)
@@ -48,6 +49,9 @@ class FakeEnv:
 
     def agent_roots(self) -> list[Path]:
         return self.agent_dirs
+
+    def worker_bundle_problem(self) -> str | None:
+        return self.bundle_problem
 
     def run_shell(self, command: str) -> int:
         self.shells.append(command)
@@ -85,6 +89,8 @@ class PreflightTest(unittest.TestCase):
             ("permissions", FakeEnv(perms={"push": False, "triage": True})),
             ("clean tree", FakeEnv(status=[" M file.py"])),
             ("fetch", FakeEnv(fetch_ok=False)),
+            ("worker bundle", FakeEnv(bundle_problem="not found at /x")),
+            ("worker bundle", FakeEnv(bundle_problem="the installed Claude Code cannot load it")),
             ("labels", FakeEnv(labels=None)),
             ("labels", FakeEnv(create_ok=False)),
         ]
@@ -115,6 +121,12 @@ class PreflightTest(unittest.TestCase):
             self.assertIn("reviewer agent", message)
             self.assertIn("other-reviewer", message)
             self.assertIsNone(find_agent("nope", env.agent_dirs))
+
+    def test_default_agents_are_the_bundles_own(self) -> None:
+        bundle_agents = Path(__file__).resolve().parent.parent / "worker-bundle" / "agents"
+        config = parse_config({"verify_commands": ["true"]})
+        self.assertIsNone(preflight(config, FakeEnv(agent_dirs=[bundle_agents])))
+        self.assertIn("reviewer agent", self.failure(FakeEnv(agent_dirs=[]), config))
 
     def test_ticket_gate_agent_must_exist(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

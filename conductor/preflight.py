@@ -12,6 +12,7 @@ from typing import Protocol
 
 from conductor import labels
 from conductor.config import Config
+from conductor.worker_bundle import BUNDLE_NAME
 
 # (name, color, description). Existing labels are never touched.
 REQUIRED_LABELS: tuple[tuple[str, str, str], ...] = (
@@ -52,7 +53,11 @@ class Environment(Protocol):
         ...
 
     def agent_roots(self) -> list[Path]:
-        """Directories searched for agent definitions (user, then repo)."""
+        """Directories searched for agent definitions (user, repo, then the worker bundle)."""
+        ...
+
+    def worker_bundle_problem(self) -> str | None:
+        """None when the worker bundle exists and the installed Claude Code loads it, else why not."""
         ...
 
     def run_shell(self, command: str) -> int: ...
@@ -123,14 +128,19 @@ def _check_fetch(config: Config, env: Environment) -> str | None:
     return None
 
 
+def _check_worker_bundle(config: Config, env: Environment) -> str | None:
+    problem = env.worker_bundle_problem()
+    if problem is not None:
+        return f"worker bundle: {problem} (reinstall ralph-gh; sessions never start unguarded)"
+    return None
+
+
 def _check_agent(label: str, name: str, env: Environment) -> str | None:
-    if ":" in name:  # plugin:agent, only name-checked at config load
+    plugin, _, agent = name.rpartition(":")
+    if plugin and plugin != BUNDLE_NAME:  # another plugin's agent, only name-checked at config load
         return None
-    if find_agent(name, env.agent_roots()) is None:
-        return (
-            f"{label}: no agent named '{name}' in the user or repo agents directory "
-            "(run install.sh?)"
-        )
+    if find_agent(agent, env.agent_roots()) is None:
+        return f"{label}: no agent named '{name}' in the worker bundle or the user or repo agents directory"
     return None
 
 
@@ -183,6 +193,7 @@ _CHECKS: tuple[Callable[[Config, Environment], str | None], ...] = (
     _check_permissions,
     _check_clean_tree,
     _check_fetch,
+    _check_worker_bundle,
     _check_reviewer_agent,
     _check_ticket_gate_agent,
     _check_labels,

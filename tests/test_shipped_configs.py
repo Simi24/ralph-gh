@@ -20,6 +20,8 @@ class ShippedConfigsTest(unittest.TestCase):
                 "bash -n install.sh",
                 "claude plugin validate .",
                 "claude plugin test .",
+                "claude plugin validate worker-bundle",
+                "claude plugin test worker-bundle",
             ),
         )
 
