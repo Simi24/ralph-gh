@@ -28,6 +28,7 @@ def legacy_message() -> str:
     lines = [
         f"{LEGACY_FILE} is no longer read; create {CONFIG_FILE} (TOML, plain data) with these keys:",
         *(f"  {old} -> {new}  ({note})" for old, new, note in MAPPING),
+        "  new: allow_manifest_edits (true/false, default false: lets worker sessions edit dependency manifests)",
         "  new: parallel (integer >= 1, default 3)",
         "  dropped: --max-iterations (no counterpart: a run is one PRD)",
     ]

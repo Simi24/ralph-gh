@@ -37,12 +37,18 @@ parallel = 3
 # integration-fix rounds after a merge that breaks the integration branch.
 gate_fix_rounds = 2
 
-# Agents (claude --agent), looked up by frontmatter `name:` in the user agents
-# directory (~/.claude/agents, or $CLAUDE_CONFIG_DIR/agents) or the repo's
-# .claude/agents at startup. "plugin:name" is accepted for a plugin agent.
+# Agents (claude --agent). The defaults are the worker bundle's own, which every worker
+# session loads (see README, "The worker bundle"). Another name is looked up by frontmatter
+# `name:` in the user agents directory (~/.claude/agents, or $CLAUDE_CONFIG_DIR/agents) or the
+# repo's .claude/agents at startup; "plugin:name" is accepted for a plugin agent.
 # Set one when the repo has its own reviewer.
-reviewer_agent = "ralph-gate-reviewer"   # the final review of the whole PRD (Opus)
-ticket_gate_agent = "ralph-ticket-gate"  # the light acceptance-criteria gate per ticket (Sonnet)
+reviewer_agent = "ralph-guard:ralph-gate-reviewer"   # the final review of the whole PRD (Opus)
+ticket_gate_agent = "ralph-guard:ralph-ticket-gate"  # the light acceptance-criteria gate per ticket (Sonnet)
+
+# ralph-guard refuses writes to dependency manifests (package.json, pyproject.toml,
+# requirements*.txt, lock files, ...) in worker sessions. Set true when this repo's
+# tickets legitimately change them. Default false.
+allow_manifest_edits = false
 
 # Seconds before a hung claude session is killed (its whole process group), so
 # an unattended run never freezes. Default 7200.

@@ -26,8 +26,8 @@ class Config:
     branch_prefix: str = "feat"
     parallel: int = 3
     gate_fix_rounds: int = 2
-    reviewer_agent: str = "ralph-gate-reviewer"
-    ticket_gate_agent: str = "ralph-ticket-gate"
+    reviewer_agent: str = "ralph-guard:ralph-gate-reviewer"
+    ticket_gate_agent: str = "ralph-guard:ralph-ticket-gate"
     session_timeout: int = 7200
     model: str | None = None
     yolo_allowlist: tuple[str, ...] = ()  # Python regexes, re.search per changed path
@@ -37,6 +37,7 @@ class Config:
     preflight_health_retries: int = 30
     wait_for_reset: bool = False  # after a usage limit: wait and resume instead of exiting
     usage_wait_seconds: int = 1800
+    allow_manifest_edits: bool = False  # worker sessions may edit dependency manifests (ralph-guard)
     # Per-run values, supplied by the CLI (or by tests) through with_run()
     prd: int = 0
     repo_root: Path = Path(".")
@@ -53,7 +54,7 @@ class Config:
 
 
 _INT_KEYS = {"parallel", "gate_fix_rounds", "session_timeout", "preflight_health_retries", "usage_wait_seconds"}
-_BOOL_KEYS = {"wait_for_reset"}
+_BOOL_KEYS = {"wait_for_reset", "allow_manifest_edits"}
 
 
 def _check_token(key: str, value: str, pattern: "re.Pattern[str]", what: str) -> None:

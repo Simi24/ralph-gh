@@ -25,6 +25,9 @@ class LegacyConfigTest(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaisesRegex(ConfigError, "doc_files"):
                 parse_config({"verify_commands": ["x"], "doc_files": bad})
 
+    def test_allow_manifest_edits_is_mentioned_as_a_new_key(self) -> None:
+        self.assertIn("new: allow_manifest_edits", legacy_message())
+
     def test_toml_wins_when_both_exist(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / ".ralph-gh.config").write_text("x")

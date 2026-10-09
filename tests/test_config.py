@@ -16,7 +16,13 @@ class LoadConfigTest(unittest.TestCase):
         config = self.load('verify_commands = ["echo $(touch pwned)"]\nbranch_prefix = "ralph"\nparallel = 1\n')
         self.assertEqual(config.verify_commands, ("echo $(touch pwned)",))
         self.assertEqual((config.branch_prefix, config.parallel, config.base_branch), ("ralph", 1, "main"))
-        self.assertEqual(config.reviewer_agent, "ralph-gate-reviewer")
+        self.assertEqual(config.reviewer_agent, "ralph-guard:ralph-gate-reviewer")
+
+    def test_allow_manifest_edits_defaults_to_false_and_must_be_a_bool(self) -> None:
+        self.assertFalse(self.load('verify_commands = ["x"]').allow_manifest_edits)
+        self.assertTrue(self.load('verify_commands = ["x"]\nallow_manifest_edits = true').allow_manifest_edits)
+        with self.assertRaises(ConfigError):
+            self.load('verify_commands = ["x"]\nallow_manifest_edits = "yes"')
 
     def test_invalid_configs_are_refused(self) -> None:
         for name, toml in [

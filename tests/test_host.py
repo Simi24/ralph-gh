@@ -81,8 +81,42 @@ class HostEnvironmentTest(unittest.TestCase):
 
     def test_agent_roots_include_user_and_repo(self) -> None:
         roots = HostEnvironment(Path("/repo")).agent_roots()
-        self.assertEqual(roots[-1], Path("/repo/.claude/agents"))
+        self.assertEqual(roots[1], Path("/repo/.claude/agents"))
         self.assertEqual(roots[0].name, "agents")
+        self.assertEqual(roots[-1], HostEnvironment(Path("/repo")).bundle / "agents")
+
+    def stub_claude(self, script: str) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        bundle = Path(tmp.name) / "bundle"
+        (bundle / ".claude-plugin").mkdir(parents=True)
+        (bundle / ".claude-plugin" / "plugin.json").write_text("{}")
+        self.stub_gh_named("claude", script)
+        return bundle
+
+    def stub_gh_named(self, name: str, script: str) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        stub = Path(tmp.name) / name
+        stub.write_text(f"#!/bin/sh\n{script}\n")
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+        patch = mock.patch.dict(os.environ, {"PATH": f"{tmp.name}:{os.environ['PATH']}"})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_worker_bundle_is_valid_only_when_present_and_claude_validates_it(self) -> None:
+        bundle = self.stub_claude('[ "$1 $2" = "plugin validate" ] && [ -n "$3" ]')
+        self.assertIsNone(HostEnvironment(Path("."), bundle=bundle).worker_bundle_problem())
+        self.assertIn("not found", HostEnvironment(Path("."), bundle=bundle / "gone").worker_bundle_problem() or "")
+
+    def test_worker_bundle_that_claude_cannot_load_is_a_problem(self) -> None:
+        bundle = self.stub_claude("echo no hooks support >&2; exit 1")
+        problem = HostEnvironment(Path("."), bundle=bundle).worker_bundle_problem()
+        self.assertIn("cannot load", problem or "")
+        self.assertIn("no hooks support", problem or "")
+
+    def test_the_shipped_bundle_is_found(self) -> None:
+        self.assertTrue((HostEnvironment(Path(".")).bundle / ".claude-plugin" / "plugin.json").is_file())
 
 
 if __name__ == "__main__":

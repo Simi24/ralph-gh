@@ -46,48 +46,72 @@ final review (ralph-gate-reviewer, Opus) of the whole PR against the PRD
 
 A review verdict tags every finding `BLOCKING` (a verified defect, an unmet acceptance criterion, a hard violation of a documented rule, a failing verify command) or `FOLLOW-UP` (judgement calls, nice-to-haves). Only `BLOCKING` findings FAIL a review or reach a fix session; `FOLLOW-UP` ones stay in the verdict comment for a human. An unparsable or missing verdict is never a PASS: the review is retried once with a fresh session, and a second unparsable verdict fails the ticket (or blocks the PRD) without a fix session.
 
+### The worker bundle and ralph-guard
+
+`worker-bundle/` is a plugin folder of its own that the main plugin does not load, so your interactive sessions never see its agents or its guard. It holds the two reviewer agents and the `ralph-guard` hooks. The conductor finds it next to its own package (never through configuration) and starts **every** worker session (exploration, implementer, fix, merge-fix, integration-fix, final-fix, ticket gate, final review) with `--plugin-dir <bundle>` and `RALPH_GUARD=1`. Only the exploration session also gets `RALPH_GUARD_ROOTS` (its notes directory) as an extra writable root.
+
+`ralph-guard` turns the session contract into a hard limit. It refuses `git push`, `--no-verify`, GitHub writes (PR/issue/label/release/... create, merge, edit, comment, review, delete; `gh api` with a non-GET method or fields), writes outside the session's cwd plus the extra roots (symlinks and `..` resolved), writes into `.git`, and edits of dependency manifests unless `allow_manifest_edits = true`. Read-only `gh` calls and in-worktree writes pass. Every refusal says what to do instead (commit and report `RALPH:DONE`, or report `RALPH:BLOCKED`). The guard is inert without `RALPH_GUARD=1` and a guard that fails refuses the call. The guard is **defense in depth**, not a sandbox: shell parsing is best effort, so the conductor's own checks (verify, gates, head-pinned merges) stay the authority.
+
+Preflight fails (naming `worker bundle`) when the bundle is missing or the installed Claude Code cannot load it (`claude plugin validate`), so a run never starts unguarded. The mods API is early access.
+
+### Minimum Claude Code version
+
+The plugin needs a Claude Code that has `claude plugin validate` and `claude plugin test` and loads hooks modules and `--plugin-dir`: **2.1.295** is the version it was built and verified on, so treat it as the minimum. Check yours with `claude --version`; preflight refuses to start a run when the worker bundle cannot be loaded.
+
 ### The two reviewer agents
 
-Installed user-level (`~/.claude/agents/`, or `$CLAUDE_CONFIG_DIR/agents/`), so they work in every repo. Both pin their model in their frontmatter — the model is decided by the definition, not the caller — so reviewer sessions never get `--model`. Writing sessions (exploration, implementer, fix, merge-fix, final-fix) run on the `model` you set in `.ralph-gh.toml`, or on Claude Code's default.
+They live in the worker bundle (see above), so they work in every repo and stay out of your interactive sessions. Both pin their model in their frontmatter — the model is decided by the definition, not the caller — so reviewer sessions never get `--model`. Writing sessions (exploration, implementer, fix, merge-fix, final-fix) run on the `model` you set in `.ralph-gh.toml`, or on Claude Code's default.
 
 - **`ralph-ticket-gate`** (Sonnet) — the light per-ticket gate: acceptance criteria and spec only, no standards or design review.
 - **`ralph-gate-reviewer`** (Opus) — the final review of the PRD: adversarial correctness pass, acceptance-criteria coverage, repo-standards compliance, structured `PASS`/`FAIL` verdict. If you have a code-review skill installed it drives the review with it; otherwise it falls back to its built-in two-axis process. Review depth scales with what the diff touches (docs-only gets a lighter pass than core code), but the two-axis review and the AC coverage table are a floor at every tier. On a re-review it runs scoped to the fix diff.
 
-A repo can use its own reviewers: set `reviewer_agent` / `ticket_gate_agent` in `.ralph-gh.toml` (the run stops at startup if no agent with that frontmatter `name:` exists in the user or repo agents directory). A repo can also declare its own critical paths in `AGENTS.md` (code whose failure corrupts state, authorizes actions, or handles untrusted input) to force the reviewer's deepest tier on any diff that touches them.
+A repo can use its own reviewers: set `reviewer_agent` / `ticket_gate_agent` in `.ralph-gh.toml` (the defaults are the bundle's `ralph-guard:ralph-gate-reviewer` and `ralph-guard:ralph-ticket-gate`; for any other name the run stops at startup if no agent with that frontmatter `name:` exists in the user or repo agents directory). A repo can also declare its own critical paths in `AGENTS.md` (code whose failure corrupts state, authorizes actions, or handles untrusted input) to force the reviewer's deepest tier on any diff that touches them.
 
-## Install
+## Install as a Claude Code plugin
 
-```bash
-git clone <this-repo>
-cd ralph-gh
-./install.sh
+This repository is a Claude Code marketplace that lists one plugin, `ralph-gh`:
 
-# optional alias (the installer prints the exact line)
-echo 'alias ralph-gh="$HOME/.claude/ralph-gh/ralph-gh"' >> ~/.zshrc
+```
+/plugin install ralph-gh --marketplace Simi24/ralph-gh
 ```
 
-`install.sh` deploys, under `$CLAUDE_CONFIG_DIR` (default `~/.claude`): the `conductor/` package and the `ralph-gh` launcher into `ralph-gh/`, the two agents into `agents/`, and the `/ralph-gh` skill into `skills/ralph-gh/`. The skill lets you type `/ralph-gh --prd N ...` inside an interactive Claude Code session and have the session drive the conductor for you.
+The plugin ships the conductor, its `ralph-gh` launcher, the `/ralph-gh` skill and the `/ralph` dashboard. `/ralph-gh run --prd N` starts the conductor from the installed plugin (`${CLAUDE_PLUGIN_ROOT}/ralph-gh`), which finds its own package relative to where it is installed: no path to configure. Update with `claude plugin update`. The two reviewer agents live in `worker-bundle/agents/`, a folder the plugin does not load, so they never show up in interactive sessions.
+
+To develop on ralph-gh, add the working copy as a folder marketplace (`/plugin marketplace add /path/to/ralph-gh`) and install from it; it reads the files in place. `claude plugin validate .` checks the manifests and `claude plugin test .` runs the dashboard's hook tests (`tests/dashboard/*.test.ts`); both are part of this repo's verify commands.
+
+### The `/ralph` dashboard
+
+`/ralph [owner/repo]` opens a pane that follows a run from inside Claude Code; `/ralph off` (or closing the pane) stops it. It is on demand: loading the plugin only registers the command, with no timer, no `gh` call and no file read. While watching it polls the local `run.log` every few seconds and reads GitHub (read-only `gh api`) when the pane opens and when the log shows a new event, never on an unchanged poll; each queued ticket's blockers are read once per PRD. Without GitHub data the pane still draws from `run.log` alone.
+
+The pane shows the PRD's pipeline and the integration branch's state, a progress bar with counts (done, in flight, need attention, ready, waiting, not queued), the tickets in flight as pipelines with title, PR and elapsed time, the ones that need attention, the next ready tickets, and collapsible waiting and done groups. Toasts and a status line appear only while watching. The **Drain** button writes the `STOP` file of the watched repo's state dir (the same file `ralph-gh stop` writes) and nothing else. The code is in `hooks/` (`parse.ts` and `plan.ts` are pure modules, `register.tsx` is the hooks module).
+
+### Run it from a terminal
+
+Inside Claude Code the `/ralph-gh` skill starts runs. To also have `ralph-gh run` and `ralph-gh stop` in a terminal, take this one step after installing the plugin. It writes a small `ralph-gh` command into `~/.local/bin` (put that on your `PATH`) that always runs the newest installed plugin's conductor, so `claude plugin update` needs no repeat:
+
+<!-- terminal-launcher -->
+```bash
+mkdir -p ~/.local/bin && cat > ~/.local/bin/ralph-gh <<'EOF'
+#!/usr/bin/env bash
+cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+launcher="$(ls -d "$cfg"/plugins/cache/ralph-gh/ralph-gh/*/ralph-gh 2>/dev/null | sort -V | tail -n1)"
+[ -n "$launcher" ] || { echo "ralph-gh: plugin not installed: run /plugin install ralph-gh --marketplace Simi24/ralph-gh in Claude Code" >&2; exit 1; }
+exec "$launcher" "$@"
+EOF
+chmod +x ~/.local/bin/ralph-gh
+```
+
+### Moving from `install.sh`
+
+`install.sh` is now a migration stub: it prints the plugin install command and what to remove, installs and deletes nothing, and exits non-zero. The conductor also looks for a legacy installation under `$CLAUDE_CONFIG_DIR` (default `~/.claude`) at the start of a run: the `ralph-gh/conductor` package and launcher, `skills/ralph-gh`, and the two reviewer agents in `agents/`. It never uses what it finds; it prints a warning with the exact `rm -rf` lines and goes on. Keep `ralph-gh/state`: the plugin uses the same run state. The drift check and `version.txt` copying are gone, because `claude plugin update` replaces them.
 
 Requires: **Python 3.12+** (standard library only, nothing to `pip install`), `claude` (Claude Code CLI), `git`, and `gh` authenticated as a collaborator with **push** and **triage** permission — or higher — on the repo, so it can push branches, merge PRs, and create/edit `ralph:*` labels. Preflight checks all of this for real at startup and exits before spawning any session if something is missing.
-
-## Updating
-
-The copies under `~/.claude/` are a **deployment** of this repo, not a separate thing — a `git pull` alone changes nothing your runs actually use. Redeploy after every pull:
-
-```bash
-git pull
-./install.sh
-```
-
-`install.sh` overwrites the installed copy and, for every installed file that differs from the clone's, first saves the old version as `*.bak` (`config.py.bak`, `ralph-gate-reviewer.md.bak`, ...). Files an older version installed and this one no longer ships (the bash orchestrator `ralph-gh.sh`, its `CLAUDE.md` iteration prompt, the `ralph-refactorer` agent, modules removed from the package) are moved aside as `.bak` too, so nothing stale stays active.
-
-Each install stamps the clone's path and commit SHA into `ralph-gh/.installed`. If you `git pull` and then start a run without reinstalling, the conductor notices its installed copy is behind that clone and prints one line at startup (`WARNING: installed copy is behind your clone (<sha> -> <sha>) — run install.sh`) — advisory only, it never blocks the run, and it fails open when the clone is gone or not a git checkout. It never touches the network.
 
 ## Per-repo setup (one time)
 
 ```bash
 cd /path/to/your-repo
-cp ~/.claude/ralph-gh/example.ralph-gh.toml .ralph-gh.toml
+curl -fsSL https://raw.githubusercontent.com/Simi24/ralph-gh/main/example.ralph-gh.toml -o .ralph-gh.toml
 $EDITOR .ralph-gh.toml
 ```
 
@@ -104,8 +128,9 @@ $EDITOR .ralph-gh.toml
 - `yolo_allowlist` — regexes of files allowed to auto-merge in `yolo` mode. Entries are Python regexes matched with `re.search`, i.e. **unanchored**: `README\.md` also matches `docs/README.md`. Anchor them with `^` (and `$`), e.g. `^README\.md$`
 - `preflight_command`, `preflight_health_url`, `preflight_health_retries` — if the tests need infra (docker compose, LocalStack, ...); a failed command or a health check that never goes green aborts the run before any session is spawned. Each health probe is capped at 3s connect / 5s total
 - `wait_for_reset`, `usage_wait_seconds` — see [Usage limits](#usage-limits)
+- `allow_manifest_edits` — `true` lets worker sessions edit dependency manifests (default `false`; ralph-guard refuses them otherwise)
 
-**Migrating from the bash version:** a repo with only the old `.ralph-gh.config` is refused at startup with a table mapping every old `RALPH_*` variable to its new key. `--max-iterations` has no counterpart (a run is one PRD); `RALPH_DOC_FILES` became `doc_files`.
+**Migrating from the bash version:** a repo with only the old `.ralph-gh.config` is refused at startup with a table mapping every old `RALPH_*` variable to its new key. `--max-iterations` has no counterpart (a run is one PRD); `RALPH_DOC_FILES` became `doc_files`. New: `allow_manifest_edits`, `parallel`.
 
 Then create the PRD and label its tickets:
 
@@ -209,7 +234,7 @@ On a match:
 
 ## Releases
 
-Tags and changelogs are automated with [release-please](https://github.com/googleapis/release-please): every push to `main` updates a standing release PR built from the conventional-commit history, and merging it cuts a GitHub release, bumps `version.txt`, and appends to `CHANGELOG.md` — nothing to run by hand. `install.sh` copies `version.txt` next to the launcher (and removes a stale one when your clone has none), so an installed copy always says which cut it is. Because the final PR is squash-merged, each PRD lands on the base branch as one conventional commit, which is what release-please reads.
+Tags and changelogs are automated with [release-please](https://github.com/googleapis/release-please): every push to `main` updates a standing release PR built from the conventional-commit history, and merging it cuts a GitHub release, bumps the version (including the plugin manifest, which is how `claude plugin update` sees a new release), and appends to `CHANGELOG.md` — nothing to run by hand. Because the final PR is squash-merged, each PRD lands on the base branch as one conventional commit, which is what release-please reads.
 
 ## Recommended companions
 

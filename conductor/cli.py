@@ -10,18 +10,18 @@ from pathlib import Path
 
 from conductor.claude_agents import ClaudeAgents
 from conductor.config import AUTONOMY_MODES, Config, ConfigError
-from conductor.drift import drift_warning, install_dir
 from conductor.gh_forge import GhForge
 from conductor.gh_runner import subprocess_runner
 from conductor.git_adapter import GitCli
 from conductor.host import HostEnvironment
 from conductor.legacy_config import load_repo_config
+from conductor.legacy_install import legacy_install_notice
 from conductor.observer import Observer
 from conductor.repo_context import RepoContext, RepoError, find_repo
 from conductor.result import EXIT_STARTUP_ERROR
 from conductor.run import run
 from conductor.signals import install_signal_handlers
-from conductor.state_dir import default_state_root
+from conductor.state_dir import claude_config_dir, default_state_root
 from conductor.stopping import STOP_FILE, StopState, write_stop_file
 
 
@@ -56,9 +56,9 @@ def _stop(repo: RepoContext) -> int:
 
 
 def _run(repo: RepoContext, config: Config) -> int:
-    warning = drift_warning(install_dir())
-    if warning:  # advisory: never blocks the run
-        print(f"ralph-gh: WARNING: {warning}", file=sys.stderr)
+    notice = legacy_install_notice(claude_config_dir())
+    if notice:  # advisory: the legacy copy is never used and never blocks the run
+        print(f"ralph-gh: WARNING: {notice}", file=sys.stderr)
     config.state_root.mkdir(parents=True, exist_ok=True)
     stop = StopState(config.state_root / STOP_FILE)
     restore = install_signal_handlers(stop)
@@ -66,7 +66,7 @@ def _run(repo: RepoContext, config: Config) -> int:
         forge = GhForge(repo.name, subprocess_runner(repo.root))
         observer = Observer(forge, prd=config.prd, state_root=config.state_root, repo_root=repo.root, echo=True)
         result = run(
-            config, forge, ClaudeAgents(stop.sessions), GitCli(repo.root),
+            config, forge, ClaudeAgents(stop.sessions, allow_manifest_edits=config.allow_manifest_edits), GitCli(repo.root),
             env=HostEnvironment(repo.root, config.state_root / "run.log"), observer=observer, stop=stop,
         )
     finally:

@@ -6,7 +6,7 @@ from pathlib import Path
 from conductor.config import parse_config
 from conductor.preflight import find_agent
 
-AGENTS = Path(__file__).resolve().parent.parent / "agents"
+AGENTS = Path(__file__).resolve().parent.parent / "worker-bundle" / "agents"
 
 
 class AgentDefinitionsTest(unittest.TestCase):
@@ -14,7 +14,7 @@ class AgentDefinitionsTest(unittest.TestCase):
         config = parse_config({"verify_commands": ["true"]})
         for name in (config.reviewer_agent, config.ticket_gate_agent):
             with self.subTest(name):
-                path = find_agent(name, [AGENTS])
+                path = find_agent(name.rpartition(":")[2], [AGENTS])
                 self.assertIsNotNone(path)
                 text = path.read_text()  # type: ignore[union-attr]
                 self.assertRegex(text, r"(?m)^model:\s*\S+$")
