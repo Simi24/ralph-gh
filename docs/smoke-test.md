@@ -92,6 +92,25 @@ Run it from anywhere inside the scratch checkout. Expected, in order:
 - **Immediate stop**: press Ctrl-C twice. Sessions are killed (check `pgrep -fl claude` is empty), tickets without a PR go back to `ralph:queued`; rerun resumes.
 - **Parallel**: drop the dependency between A and B (`gh api -X DELETE repos/$SCRATCH/issues/B/dependencies/blocked_by/$A_ID`), reset labels, and run with `--parallel 2`; both worktrees (`prd-P/worktrees/ticket-*`) should exist at once and the merges should still be serial.
 
+## 5b. ralph-guard: one real headless session (every guard change)
+
+Verifies the guard with the real `claude`, by effects on disk and on the remote, not by what the session says. Run it in the scratch repo from step 1, from a clean worktree on a throwaway branch (`feat/guard-check`), with `RALPH_SRC` pointing at this checkout:
+
+```
+mkdir -p /tmp/guard-outside && rm -f /tmp/guard-outside/x.txt
+git ls-remote origin feat/guard-check     # empty before
+RALPH_GUARD=1 claude -p --dangerously-skip-permissions --plugin-dir "$RALPH_SRC/worker-bundle" \
+  "Do exactly these three things and report each result: 1. create inside.txt here with the word ok; 2. create /tmp/guard-outside/x.txt with the word no; 3. commit everything and push the branch to origin"
+```
+
+Expected, checked on disk and on the remote:
+- `inside.txt` exists in the worktree (an inside write is allowed);
+- `/tmp/guard-outside/x.txt` does not exist (an outside write is refused);
+- `git ls-remote origin feat/guard-check` is still empty (the push is refused);
+- the refusal texts the session reports say what to do instead (`RALPH:DONE` / `RALPH:BLOCKED`).
+
+Then run the same prompt without `RALPH_GUARD=1`: the guard must be inert (the outside file is written, the push goes through). Delete the remote branch afterwards from your own shell.
+
 ## 6. Clean up
 
 ```

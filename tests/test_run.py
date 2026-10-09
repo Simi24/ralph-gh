@@ -102,7 +102,7 @@ class TracerBulletTest(unittest.TestCase):
         agents = self.agents()
         run(self.config(), self.forge, agents, self.git)
         gate = agents.requests[1]
-        self.assertEqual((gate.role, gate.agent, gate.model), ("ticket-gate", "ralph-ticket-gate", None))
+        self.assertEqual((gate.role, gate.agent, gate.model), ("ticket-gate", "ralph-guard:ralph-ticket-gate", None))
 
     def test_failing_verify_blocks_the_merge(self) -> None:
         result = run(self.config(verify="false"), self.forge, self.agents(), self.git)

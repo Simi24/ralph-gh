@@ -1,0 +1,8 @@
+{
+  "name": "ralph-guard",
+  "version": "0.1.0",
+  "description": "ralph-gh worker bundle: hard limits for worker sessions (no pushes, no GitHub writes, no --no-verify, no writes outside the worktree; active only when RALPH_GUARD=1) plus the ticket-gate and final-review agents. Loaded only by the conductor's worker sessions.",
+  "author": {
+    "name": "Simone Paolo Petta"
+  }
+}
