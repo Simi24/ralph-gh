@@ -49,8 +49,9 @@ export function parseRun(log: string): Board | null {
     if (exited) board.ended ??= exited[1]
     const status = STATUS.exec(line)
     if (!status) continue
-    const [, at, ticket, text] = status
-    board.recent = [...board.recent, `${ticket ? `#${ticket}` : 'PRD'} ${text}`].slice(-6)
+    const [, at, number, text] = status
+    const ticket = number && Number(number) !== board.prd ? number : undefined // `#<prd> verify started` is PRD-level
+    board.recent = [...board.recent, `${number ? `#${number}` : 'PRD'} ${text}`].slice(-6)
     if (ticket) {
       const n = Number(ticket)
       const old = tickets.get(n)

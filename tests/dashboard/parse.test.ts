@@ -94,3 +94,13 @@ test('toasts only what is new in the same run', () => {
   expect(notable(null, after)).toEqual([])
   expect(parseRun('nothing here')).toBeNull()
 })
+
+test('a PRD-level status line that names the PRD is no ticket row', () => {
+  const board = parseRun(`2026-10-08T18:06:57+02:00 ralph-gh session: s1
+2026-10-08T18:06:57+02:00 PRD: #1
+2026-10-08T18:07:34+02:00 [status] #2 integrated
+2026-10-08T18:09:00+02:00 [status] #1 verify started`)!
+  expect(board.tickets.map(t => t.number)).toEqual([2])
+  expect(board.recent.at(-1)).toBe('#1 verify started')
+  expect(summary(board)).toContain('1/1 integrated')
+})
