@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { elapsed, notable, parseRun, summary } from '../hooks/parse'
+import { elapsed, notable, parseRun, since, summary } from '../hooks/parse'
 
 const OLD = `2026-10-07T10:00:00+02:00 ralph-gh session: ralph-old
 2026-10-07T10:00:01+02:00 [status] #9 dispatched`
@@ -77,6 +77,13 @@ test('the PRD walks explore, tickets, final review, done', () => {
 2026-10-08T18:10:54+02:00 [status] PRD run ended: final review passed, merge withheld: autonomy=halt-each-pr`)!
   expect(ended.prdStage).toBe(3)
   expect(ended.endedTone).toBe('ok')
+})
+
+test('a running step shows the time since its last event, not a frozen gap', () => {
+  const at = '2026-10-09T10:34:05+02:00'
+  expect(since(at, Date.parse('2026-10-09T10:41:17+02:00'))).toBe('7m12s')
+  expect(since(at, Date.parse('2026-10-09T12:04:05+02:00'))).toBe('1h30m')
+  expect(since(at, Date.parse('2026-10-09T10:34:00+02:00'))).toBe('') // a clock behind the log reads as nothing
 })
 
 test('toasts only what is new in the same run', () => {

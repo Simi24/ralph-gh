@@ -46,6 +46,7 @@ declare module 'claude-code' {
       issues: Issues | null
       showDone: boolean
       showWaiting: boolean
+      now: number | null // the last poll's clock, so in-flight steps show a running time
     }
   }
 }

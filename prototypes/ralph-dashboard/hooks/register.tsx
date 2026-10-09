@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Engine, Register, Timer } from 'claude-code'
 
 import type { Blocker, Board, Issues, IssueTicket, Tone } from '../types'
-import { PRD_STAGES, STAGES, elapsed, notable, parseRun, summary } from './parse'
+import { PRD_STAGES, STAGES, elapsed, notable, parseRun, since, summary } from './parse'
 import { bar, names, plan } from './plan'
 
 /**
@@ -31,6 +31,7 @@ const stateDir = atom({ plugin: 'ralph-dashboard', key: 'stateDir' } as const, n
 const issues = atom({ plugin: 'ralph-dashboard', key: 'issues' } as const, null)
 const showDone = atom({ plugin: 'ralph-dashboard', key: 'showDone' } as const, false)
 const showWaiting = atom({ plugin: 'ralph-dashboard', key: 'showWaiting' } as const, false)
+const clock = atom({ plugin: 'ralph-dashboard', key: 'now' } as const, null)
 
 let timer: Timer | undefined // set only while watching
 let busy = false // a refresh that reads fifty tickets' blockers outlasts a poll interval
@@ -116,6 +117,9 @@ async function refresh($: Engine, opening = false): Promise<void> {
       if (fresh) await update($, issues, () => fresh)
     }
 
+    // Every poll moves the clock, so a step that has no new event still shows its running time.
+    const tick = await $.clock.now()
+    await update($, clock, () => tick)
     if (isUnchanged) return
     for (const line of next ? notable(previous, next) : []) $.ui.toast(`ralph ${line}`)
     $.ui.status(next ? summary(next) : undefined)
@@ -194,6 +198,7 @@ export const register: Register = on => {
     const dir = await read($, stateDir)
     const isDoneOpen = await read($, showDone)
     const isWaitingOpen = await read($, showWaiting)
+    const now: number | null = await read($, clock)
     const columns = Math.max(30, (e.props as { bodyColumns?: number }).bodyColumns ?? e.viewport?.columns ?? 60)
 
     // A pipeline never shrinks: in a narrow row only the title gives way.
@@ -293,11 +298,21 @@ export const register: Register = on => {
                 <Box flexShrink={1} flexGrow={1}>
                   <Text wrap="truncate-end">{known?.tickets.find(k => k.number === t.number)?.title ?? ''}</Text>
                 </Box>
-                <Box flexShrink={0}>
-                  <Text dimColor>{`${t.pr ? `  PR #${t.pr}` : ''}  ${elapsed(t.firstAt, t.at)}`}</Text>
-                </Box>
+                {t.pr && (
+                  <Box flexShrink={0}>
+                    <Text dimColor>{`  PR #${t.pr}`}</Text>
+                  </Box>
+                )}
               </Box>
-              <Text dimColor>{'              '}{STAGES[t.stage]}: {t.text}</Text>
+              <Text>
+                {'              '}
+                <Text color="yellow">{STAGES[t.stage]}</Text>
+                <Text dimColor>
+                  {now !== null
+                    ? ` · ${since(t.at, now)} in this step · ${since(t.firstAt, now)} total — ${t.text}`
+                    : ` · ${elapsed(t.firstAt, t.at)} — ${t.text}`}
+                </Text>
+              </Text>
             </Box>
           ))}
         </Box>

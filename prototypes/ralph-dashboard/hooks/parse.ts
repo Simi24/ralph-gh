@@ -96,8 +96,18 @@ export function summary(board: Board): string {
 
 /** `2m05s` between two ISO timestamps; empty when either is unreadable. */
 export function elapsed(from: string, to: string): string {
-  const ms = Date.parse(to) - Date.parse(from)
+  return duration(Date.parse(to) - Date.parse(from))
+}
+
+/** `7m12s` from an ISO timestamp to a clock reading in ms (the poll's `now`): a time that runs. */
+export function since(from: string, nowMs: number): string {
+  return duration(nowMs - Date.parse(from))
+}
+
+function duration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return ''
   const s = Math.round(ms / 1000)
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
+  return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m`
 }
