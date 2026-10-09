@@ -180,6 +180,10 @@ export const register: Register = on => {
       await update($, repo, () => wanted)
       await update($, board, () => null)
       await update($, issues, () => null)
+    } else {
+      await update($, repo, () => null) // a bare /ralph returns to the current repo
+      await update($, board, () => null)
+      await update($, issues, () => null)
     }
     await refresh($, true)
     // No repository found here: show why, but start no timer (it would retry `gh` every poll).

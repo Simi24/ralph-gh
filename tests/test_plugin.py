@@ -35,6 +35,12 @@ class PluginLayoutTest(unittest.TestCase):
         for stale in (".claude}/ralph-gh/ralph-gh", ".claude}/ralph-gh/README", ".claude}/ralph-gh/example"):
             self.assertNotIn(stale, text)
 
+    def test_the_skill_accepts_a_leading_run_or_stop_subcommand(self) -> None:
+        text = (REPO / "skills/ralph-gh/SKILL.md").read_text()
+        self.assertRegex(text, r"starts with the subcommand `run` or `stop`, forward it as is")
+        self.assertIn("/ralph-gh run --prd 52", text)
+        self.assertNotIn("`/ralph-gh --prd", text)
+
     def test_the_skill_teaches_the_dashboard(self) -> None:
         text = (REPO / "skills/ralph-gh/SKILL.md").read_text()
         for needed in ("/ralph owner/repo", "/ralph off", "Drain", "nothing polls", "instead of reading `run.log`"):

@@ -11,10 +11,10 @@ const DIR = '/cfg/ralph-gh/state/o__r'
 /** Hooks beneath the plugin: a log that can grow, and a record of every file read, write and process run. */
 function world(on: any, ghWorks = true, hold?: { gate?: Promise<void> }) {
   const seen = { reads: [] as string[], writes: [] as string[], runs: [] as string[][], toasts: [] as string[], status: [] as unknown[] }
-  const files = { log: LOG_ONE }
+  const files = { log: LOG_ONE, current: '' }
   mock.env(on, { CLAUDE_CONFIG_DIR: '/cfg', HOME: '/home' })
   const clock = mock.clock(on, { now: Date.parse('2026-10-08T18:10:00+02:00') })
-  on('fs.exists', async (_$: any, e: any) => ({ value: e.path === `${DIR}/run.log` }))
+  on('fs.exists', async (_$: any, e: any) => ({ value: e.path.endsWith('/run.log') }))
   on('fs.read', async (_$: any, e: any) => {
     seen.reads.push(e.path)
     return { value: files.log }
@@ -27,7 +27,7 @@ function world(on: any, ghWorks = true, hold?: { gate?: Promise<void> }) {
     seen.runs.push(e.argv)
     await hold?.gate
     const url = e.argv.find((a: string) => a.startsWith('repos/')) ?? ''
-    const out = url.endsWith('/sub_issues?per_page=100') ? '[]' : url.includes('/issues/1') ? 'PRD: demo' : ''
+    const out = e.argv[1] === 'repo' ? files.current : url.endsWith('/sub_issues?per_page=100') ? '[]' : url.includes('/issues/1') ? 'PRD: demo' : ''
     return { value: { exitCode: ghWorks ? 0 : 1, stdout: ghWorks ? out : '', stderr: '' } }
   })
   on('ui.toast', async (_$: any, e: any) => {
@@ -86,6 +86,17 @@ test('closing the pane cancels every timer and clears the status line', { plugin
   await w.clock.advance(30_000)
   expect(w.seen.reads.length).toBe(reads)
   expect(w.seen.status.at(-1)).toBeUndefined()
+})
+
+test('a bare /ralph after /ralph o/other returns to the current repo', async ($, on) => {
+  const w = world(on)
+  w.files.current = 'o/cur'
+  await $.command.run({ command: 'ralph', args: 'o/other' } as never)
+  await $.command.run({ command: 'ralph', args: 'off' } as never)
+  w.seen.reads.length = 0
+  await $.command.run({ command: 'ralph', args: '' } as never)
+  expect(w.seen.reads).toContain('/cfg/ralph-gh/state/o__cur/run.log')
+  expect(w.seen.reads).not.toContain('/cfg/ralph-gh/state/o__other/run.log')
 })
 
 test('GitHub is read on open and on a new log event, never on an unchanged poll', async ($, on) => {

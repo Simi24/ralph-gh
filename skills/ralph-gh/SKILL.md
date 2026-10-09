@@ -11,10 +11,11 @@ This skill is a thin wrapper around the installed `ralph-gh` launcher (`${CLAUDE
 
 1. Verify you are in a git repo and `.ralph-gh.toml` exists at the repo root. If it is missing, tell the user to copy `${CLAUDE_PLUGIN_ROOT}/example.ralph-gh.toml` to `<repo>/.ralph-gh.toml` and edit it — do NOT generate one yourself. If only an old `.ralph-gh.config` exists, the conductor refuses to start and prints the old-to-new key table: show it to the user.
 2. Make sure the user named a PRD: the command needs `--prd N`. If `$ARGUMENTS` has no `--prd`, ask for the PRD issue number instead of guessing.
-3. Run the conductor, forwarding `$ARGUMENTS` verbatim:
+3. Run the conductor. If `$ARGUMENTS` starts with the subcommand `run` or `stop`, forward it as is; otherwise put `run` in front of it:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/ralph-gh" run $ARGUMENTS
+"${CLAUDE_PLUGIN_ROOT}/ralph-gh" $ARGUMENTS          # $ARGUMENTS starts with run or stop
+"${CLAUDE_PLUGIN_ROOT}/ralph-gh" run $ARGUMENTS      # otherwise (e.g. --prd 52)
 ```
 
 4. Right after the run starts, offer the user `/ralph` to follow it (see "Following a run"). While it runs it prints progress. When it exits, show the user the contents of `last-run.md`. It lives in the per-repo state directory, **not** in the repo:
@@ -38,13 +39,13 @@ The `/ralph` dashboard is a pane inside Claude Code that follows a run: the PRD'
 
 ## Arguments
 
-Forward whatever the user passed. Common forms:
+Forward whatever the user passed (a leading `run` is optional). Common forms:
 
-- `/ralph-gh --prd 52` — default (`--autonomy respect-hitl-arch`, `parallel` from `.ralph-gh.toml`)
-- `/ralph-gh --prd 52 --autonomy halt-each-pr` — conservative: the final PR is reviewed but never merged by the conductor
-- `/ralph-gh --prd 52 --autonomy yolo` — the final PR auto-merges when its whole diff matches `yolo_allowlist`
-- `/ralph-gh --prd 52 --parallel 1` — one ticket at a time (parallel runs multiply usage; see the README)
-- `/ralph-gh --help` — print the CLI usage (run `ralph-gh --help` directly)
+- `/ralph-gh run --prd 52` — default (`--autonomy respect-hitl-arch`, `parallel` from `.ralph-gh.toml`)
+- `/ralph-gh run --prd 52 --autonomy halt-each-pr` — conservative: the final PR is reviewed but never merged by the conductor
+- `/ralph-gh run --prd 52 --autonomy yolo` — the final PR auto-merges when its whole diff matches `yolo_allowlist`
+- `/ralph-gh run --prd 52 --parallel 1` — one ticket at a time (parallel runs multiply usage; see the README)
+- `/ralph-gh run --help` — print the CLI usage (run `ralph-gh --help` directly)
 
 ## Do NOT
 

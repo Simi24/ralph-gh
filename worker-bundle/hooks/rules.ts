@@ -10,7 +10,7 @@
 const GIT_PUSH = /\bgit\b(?:\s+-[cC]\s+\S+)*\s+push\b/
 const NO_VERIFY = /--no-verify\b/
 const GH_WRITE =
-  /\bgh\s+(?:(?:pr|issue|label|release|repo|workflow|run|secret|variable|gist|cache|project|ruleset)\s+(?:create|merge|close|reopen|edit|ready|comment|review|delete|transfer|lock|unlock|pin|unpin|archive|rename|fork|set|enable|disable|cancel|rerun|clone|run|upload|update-branch|revert|develop|sync|add|remove|link|unlink|copy|mark-template|field-create|field-delete|item-add|item-archive|item-create|item-delete|item-edit)|release\s+delete-asset)\b/
+  /\bgh\s+(?:(?:pr|issue|label|release|repo|workflow|run|secret|variable|gist|cache|project|ruleset)\s+(?:create|merge|close|reopen|edit|ready|comment|review|delete|transfer|lock|unlock|pin|unpin|archive|rename|fork|set|enable|disable|cancel|rerun|clone|run|upload|update-branch|revert|develop|sync|add|remove|link|unlink|copy|mark-template|field-create|field-delete|item-add|item-archive|item-create|item-delete|item-edit)|release\s+delete-asset|repo\s+(?:deploy-key|autolink)\s+(?:add|create|delete)|repo\s+unarchive|(?:ssh-key|gpg-key)\s+(?:add|delete))\b/
 const GH_API = /\bgh\s+api\b([^\n;&|]*)/g
 const API_METHOD = /(?:-X\s*|--method[=\s]+)([A-Za-z]+)/
 const API_FIELDS = /\s(?:-f|-F|--field|--raw-field|--input)\b/
