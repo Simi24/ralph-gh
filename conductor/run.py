@@ -128,7 +128,7 @@ def _run(
         return stopped
     if frontier.exit_code != EXIT_OK:
         return frontier
-    return guarded(config, sleep, lambda: final.run_final(config, forge, agents, git, integration, notes, obs), stop.should_stop)
+    return guarded(config, sleep, lambda: final.run_final(config, forge, agents, git, integration, notes, obs, sleep), stop.should_stop)
 
 
 def _finish(tickets: list[Issue], blockers: dict[int, list[Blocker]]) -> RunResult:

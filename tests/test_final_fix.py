@@ -45,6 +45,23 @@ class FinalFixBase(unittest.TestCase):
         """The PR head is the integration branch on origin, like on GitHub."""
         self.forge.pr_head_sha = lambda number: self.origin_head()
 
+    def lag_head(self, reads: int) -> None:
+        """GitHub lag: after a push, the PR head stays the previous commit for the next `reads` reads."""
+        state = {"last": None, "stale": "", "left": 0}
+
+        def head(number: int) -> str:
+            real = self.origin_head()
+            if real != state["last"]:
+                if state["last"] is not None:
+                    state["stale"], state["left"] = state["last"], reads
+                state["last"] = real
+            if state["left"] > 0:
+                state["left"] -= 1
+                return state["stale"]
+            return real
+
+        self.forge.pr_head_sha = head  # type: ignore[method-assign]
+
     def go(self, reviews, fix=None, rounds=2, autonomy="respect-hitl-arch", verify="true"):
         config = Config(verify_commands=(verify,), gate_fix_rounds=rounds).with_run(
             prd=PRD, repo_root=self.repo.checkout, state_root=self.repo.state_root, autonomy=autonomy
@@ -61,7 +78,8 @@ class FinalFixBase(unittest.TestCase):
                 "final-fix": fix or commits_file("fixed.txt", "fixed\nRALPH:DONE"),
             }
         )
-        return run(config, self.forge, self.agents, self.git)
+        self.sleeps: list[float] = []
+        return run(config, self.forge, self.agents, self.git, sleep=self.sleeps.append)
 
     def sessions(self, role: str):
         return [r for r in self.agents.requests if r.role == role]
@@ -184,20 +202,54 @@ class BoundTest(FinalFixBase):
         self.assertIn("ralph:blocked", self.prd_labels())
 
 
+class HeadLagTest(FinalFixBase):
+    def test_a_lagging_head_is_waited_out_and_the_re_review_is_scoped_to_the_pushed_commit(self) -> None:
+        head_before = self.repo.git("rev-parse", "origin/main")
+        self.lag_head(reads=3)
+        result = self.go([FAIL, PASS])
+        pushed = self.origin_head()
+        self.assertEqual(result.exit_code, EXIT_OK)
+        self.assertEqual(len(self.sessions("final-review")), 2)
+        second = self.sessions("final-review")[1].prompt
+        self.assertIn("RE-REVIEW", second)
+        self.assertIn(f"PREV = `{head_before}`", second)
+        self.assertIn(f"HEAD = `{pushed}`", second)
+        self.assertEqual(len(self.sleeps), 3)  # one pause per stale read, none after the match
+        self.assertIn(f"final review of {pushed[:7]}, round 2", self.verdict_comments()[1])
+        self.assertEqual(self.forge.merges[-1][2], pushed)
+
+    def test_a_head_that_never_reports_the_pushed_commit_ends_the_run_without_review_or_merge(self) -> None:
+        self.lag_head(reads=10_000)
+        result = self.go([FAIL, PASS])
+        pushed = self.origin_head()
+        self.assertEqual(result.exit_code, EXIT_INCOMPLETE)
+        self.assertEqual(
+            result.reason, f"final review not started: the PR head never reported the fix commit {pushed[:7]}"
+        )
+        self.assertEqual(len(self.sessions("final-review")), 1)  # no review of the stale head
+        self.assertEqual(self.forge.ready, [])
+        self.assertEqual(self.forge.merges[-1][1], "merge")  # only the ticket merge
+        self.assertEqual(self.final_pr()["state"], "open")
+        self.assertTrue(25 <= sum(self.sleeps) <= 35)  # a bounded wait of about 30 s
+
+    def test_a_head_that_is_another_commit_than_the_pushed_one_is_never_reviewed(self) -> None:
+        self.track_real_head()
+        real = self.forge.pr_head_sha
+        self.forge.pr_head_sha = lambda number: real(number) if not self.sessions("final-fix") else "a" * 40  # type: ignore[method-assign]
+        result = self.go([FAIL, PASS])
+        self.assertEqual(result.exit_code, EXIT_INCOMPLETE)
+        self.assertEqual(len(self.sessions("final-review")), 1)
+        self.assertEqual(self.forge.ready, [])
+
+
 class FallbackToFullReviewTest(FinalFixBase):
     def second_review(self) -> str:
         return self.sessions("final-review")[1].prompt
 
-    def test_a_head_that_did_not_move_after_the_fix_gets_a_full_review(self) -> None:
-        self.go([FAIL, PASS])  # the fake PR head is constant
-        self.assertNotIn("RE-REVIEW", self.second_review())
-        self.assertIn("Full two-axis review", self.second_review())
-
-    def test_a_reviewed_commit_that_is_not_an_ancestor_of_the_head_gets_a_full_review(self) -> None:
-        heads = iter([self.repo.git("rev-parse", "origin/main")] + ["a" * 40] * 10)
-        self.forge.pr_head_sha = lambda number: next(heads)
-        self.go([FAIL, PASS])
-        self.assertNotIn("RE-REVIEW", self.second_review())
+    def test_a_head_that_did_not_move_after_the_fix_never_gets_a_review(self) -> None:
+        result = self.go([FAIL, PASS])  # the fake PR head is constant: it never reports the pushed commit
+        self.assertEqual(result.exit_code, EXIT_INCOMPLETE)
+        self.assertEqual(len(self.sessions("final-review")), 1)
 
     def wipe_verdict_before_the_second_review(self, wipe) -> None:
         """The saved verdict is tampered with between the fix round and the re-review."""
@@ -222,16 +274,9 @@ class FallbackToFullReviewTest(FinalFixBase):
         self.go([FAIL, PASS])
         self.assertNotIn("RE-REVIEW", self.second_review())
 
-    def test_a_reviewed_head_that_cannot_be_fetched_gets_a_full_review(self) -> None:
-        heads = iter([self.repo.git("rev-parse", "origin/main")] + ["b" * 40] * 10)
-        self.forge.pr_head_sha = lambda number: next(heads)  # type: ignore[method-assign]
-        self.go([FAIL, PASS])
-        self.assertNotIn("RE-REVIEW", self.second_review())
-
     def test_a_head_that_is_not_a_sha_never_reaches_a_review_or_git(self) -> None:
         for name, heads in [
             ("first review", ["--upload-pack=x"]),
-            ("re-review", [self.repo.git("rev-parse", "origin/main"), "HEAD"]),
             ("short sha", ["abc123"]),
         ]:
             with self.subTest(name):
