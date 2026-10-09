@@ -1,8 +1,10 @@
 {
   "name": "ralph-gh",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Drive a PRD's sub-issues to a merged PR: a deterministic conductor, one claude session and worktree per ticket.",
-  "author": { "name": "Simone Paolo Petta" },
+  "author": {
+    "name": "Simone Paolo Petta"
+  },
   "homepage": "https://github.com/Simi24/ralph-gh",
   "repository": "https://github.com/Simi24/ralph-gh",
   "license": "MIT",
