@@ -41,6 +41,11 @@ class PluginLayoutTest(unittest.TestCase):
         self.assertIn("/ralph-gh run --prd 52", text)
         self.assertNotIn("`/ralph-gh --prd", text)
 
+    def test_the_skill_says_stop_needs_no_prd(self) -> None:
+        text = (REPO / "skills/ralph-gh/SKILL.md").read_text()
+        self.assertIn("`stop` takes no arguments and needs no `--prd`", text)
+        self.assertNotIn("stop --prd", text)
+
     def test_the_skill_teaches_the_dashboard(self) -> None:
         text = (REPO / "skills/ralph-gh/SKILL.md").read_text()
         for needed in ("/ralph owner/repo", "/ralph off", "Drain", "nothing polls", "instead of reading `run.log`"):

@@ -181,7 +181,9 @@ export const register: Register = on => {
       await update($, board, () => null)
       await update($, issues, () => null)
     } else {
-      await update($, repo, () => null) // a bare /ralph returns to the current repo
+      watch += 1 // an in-flight poll of the old repo discards its result
+      const current = await detectRepo($)
+      await update($, repo, () => current) // a bare /ralph returns to the current repo
       await update($, board, () => null)
       await update($, issues, () => null)
     }

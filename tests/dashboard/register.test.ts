@@ -99,6 +99,24 @@ test('a bare /ralph after /ralph o/other returns to the current repo', async ($,
   expect(w.seen.reads).not.toContain('/cfg/ralph-gh/state/o__other/run.log')
 })
 
+test('a bare /ralph while a poll waits on gh still watches the current repo', async ($, on) => {
+  const hold: { gate?: Promise<void> } = {}
+  const w = world(on, true, hold)
+  w.files.current = 'o/cur'
+  await $.command.run({ command: 'ralph', args: 'o/r' } as never)
+  w.files.log = LOG_TWO
+  let release = () => {}
+  hold.gate = new Promise<void>(resolve => (release = resolve))
+  await w.clock.advance(3000) // a poll waits on gh
+  const bare = $.command.run({ command: 'ralph', args: '' } as never)
+  release()
+  const reply: any = await bare
+  expect(JSON.stringify(reply)).toContain('Watching ralph-gh runs of o/cur')
+  w.seen.reads.length = 0
+  await w.clock.advance(9000)
+  expect(w.seen.reads).toContain('/cfg/ralph-gh/state/o__cur/run.log')
+})
+
 test('GitHub is read on open and on a new log event, never on an unchanged poll', async ($, on) => {
   const w = world(on)
   await $.command.run({ command: 'ralph', args: 'o/r' } as never)

@@ -10,7 +10,7 @@ This skill is a thin wrapper around the installed `ralph-gh` launcher (`${CLAUDE
 ## What to do
 
 1. Verify you are in a git repo and `.ralph-gh.toml` exists at the repo root. If it is missing, tell the user to copy `${CLAUDE_PLUGIN_ROOT}/example.ralph-gh.toml` to `<repo>/.ralph-gh.toml` and edit it — do NOT generate one yourself. If only an old `.ralph-gh.config` exists, the conductor refuses to start and prints the old-to-new key table: show it to the user.
-2. Make sure the user named a PRD: the command needs `--prd N`. If `$ARGUMENTS` has no `--prd`, ask for the PRD issue number instead of guessing.
+2. For `run` (or no subcommand), make sure the user named a PRD: the command needs `--prd N`. If `$ARGUMENTS` has no `--prd`, ask for the PRD issue number instead of guessing. `stop` takes no arguments and needs no `--prd`: forward it as plain `ralph-gh stop`, which writes the STOP file of the current repo.
 3. Run the conductor. If `$ARGUMENTS` starts with the subcommand `run` or `stop`, forward it as is; otherwise put `run` in front of it:
 
 ```bash
