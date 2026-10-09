@@ -1,8 +1,9 @@
 import { atom, read, update } from 'claude-code'
 import type { Engine, Register, Timer } from 'claude-code'
 
-import type { Blocker, Board, Issues, IssueTicket, Tone } from '../types'
+import type { Blocker, Board, Issues, IssueTicket, PlanLimits, Tone } from '../types'
 import { PRD_STAGES, STAGES, elapsed, notable, parseRun, since, summary } from './parse'
+import { age, cells as limitCells } from './limits'
 import { bar, names, plan } from './plan'
 
 /**
@@ -32,6 +33,24 @@ const issues = atom({ plugin: 'ralph-dashboard', key: 'issues' } as const, null)
 const showDone = atom({ plugin: 'ralph-dashboard', key: 'showDone' } as const, false)
 const showWaiting = atom({ plugin: 'ralph-dashboard', key: 'showWaiting' } as const, false)
 const clock = atom({ plugin: 'ralph-dashboard', key: 'now' } as const, null)
+const limits = atom({ plugin: 'ralph-dashboard', key: 'limits' } as const, null)
+
+/**
+ * The plan's rate-limit windows, as this session's last API reply reported them. `$.session.usage()` with no
+ * arguments costs nothing. The windows are the account's, so the conductor's sessions count too, but they only
+ * move when this session talks to the API: the pane says how old the reading is.
+ */
+async function readLimits($: Engine, nowMs: number): Promise<void> {
+  try {
+    const { rateLimits } = await $.session.usage()
+    if (rateLimits.length === 0) return // not on a subscription, or nothing read yet: keep the last reading
+    const previous = await read($, limits)
+    const same = JSON.stringify(previous?.windows) === JSON.stringify(rateLimits)
+    await update($, limits, () => ({ windows: rateLimits.map(w => ({ ...w })), readAt: same && previous ? previous.readAt : nowMs }))
+  } catch {
+    // usage unavailable: the pane simply shows no plan line
+  }
+}
 
 let timer: Timer | undefined // set only while watching
 let busy = false // a refresh that reads fifty tickets' blockers outlasts a poll interval
@@ -120,6 +139,7 @@ async function refresh($: Engine, opening = false): Promise<void> {
     // Every poll moves the clock, so a step that has no new event still shows its running time.
     const tick = await $.clock.now()
     await update($, clock, () => tick)
+    await readLimits($, tick)
     if (isUnchanged) return
     for (const line of next ? notable(previous, next) : []) $.ui.toast(`ralph ${line}`)
     $.ui.status(next ? summary(next) : undefined)
@@ -199,6 +219,21 @@ export const register: Register = on => {
     const isDoneOpen = await read($, showDone)
     const isWaitingOpen = await read($, showWaiting)
     const now: number | null = await read($, clock)
+    const plan_: PlanLimits | null = await read($, limits)
+    const planLine = plan_ && now !== null && (
+      <Text>
+        <Text dimColor>plan  </Text>
+        {limitCells(plan_, now).map((c, i) => (
+          <Text>
+            {i > 0 ? <Text dimColor> · </Text> : ''}
+            <Text dimColor>{`${c.label} `}</Text>
+            <Text color={COLOR[c.tone]}>{c.percent}</Text>
+            <Text dimColor>{c.resets ? ` (resets ${c.resets})` : ''}</Text>
+          </Text>
+        ))}
+        <Text dimColor>{`  · read ${age(plan_.readAt, now)}`}</Text>
+      </Text>
+    )
     const columns = Math.max(30, (e.props as { bodyColumns?: number }).bodyColumns ?? e.viewport?.columns ?? 60)
 
     // A pipeline never shrinks: in a narrow row only the title gives way.
@@ -253,6 +288,7 @@ export const register: Register = on => {
             {run.integration.replace(/^integration /, '')}
           </Text>
         )}
+        {planLine}
 
         <Text> </Text>
         <Box>
@@ -282,6 +318,34 @@ export const register: Register = on => {
                 ✖ #{t.number} {t.title} <Text dimColor>— {t.text}</Text>
               </Text>
             ))}
+          </Box>
+        )}
+
+        {run.final && run.final.round > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text bold>
+              Final review<Text dimColor>{run.finalPr ? `  PR #${run.finalPr}` : ''}</Text>
+            </Text>
+            <Text>
+              {'  '}
+              <Text dimColor>{`round ${run.final.round} (${run.final.round === 1 ? 'full' : 'fix diff'})  `}</Text>
+              {run.final.verdict === 'pass' && <Text color="green">✔ PASS</Text>}
+              {run.final.verdict === 'fail' && <Text color="red">✖ FAIL</Text>}
+              {run.final.verdict === 'pending' && run.final.activity === null && <Text dimColor>verdict pending</Text>}
+              {run.final.activity && (
+                <Text>
+                  <Text dimColor>{run.final.verdict === 'fail' ? '  →  ' : ''}</Text>
+                  <Text color="yellow">
+                    {run.final.activity === 'review'
+                      ? '◉ reviewing'
+                      : run.final.activity === 'fix'
+                        ? '◉ fixing the blocking findings'
+                        : '◉ verifying and pushing the fix'}
+                  </Text>
+                  <Text dimColor>{now !== null && run.final.since ? ` · ${since(run.final.since, now)}` : ''}</Text>
+                </Text>
+              )}
+            </Text>
           </Box>
         )}
 

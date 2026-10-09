@@ -22,6 +22,15 @@ export type Board = {
   endedTone?: Tone
   recent: string[]
   lines: number
+  final?: FinalPhase
+}
+
+/** The PRD's final review as this run's log tells it: rounds, the last verdict, what runs now. */
+export type FinalPhase = {
+  round: number // final reviews started in this run
+  verdict: 'pending' | 'pass' | 'fail' // of the last finished review
+  activity: 'review' | 'fix' | 'verify' | null // what runs now ('verify': the fix is verified and pushed)
+  since?: string // when that activity started
 }
 
 export type IssueTicket = { number: number; title: string; state: string; labels: string[] }
@@ -47,6 +56,13 @@ declare module 'claude-code' {
       showDone: boolean
       showWaiting: boolean
       now: number | null // the last poll's clock, so in-flight steps show a running time
+      limits: PlanLimits | null // the account's plan windows, as this session last read them
     }
   }
+}
+
+/** The subscription's rate-limit windows (five_hour, seven_day), as the last API reply reported them. */
+export type PlanLimits = {
+  windows: { kind: string; percentUsed: number; resetsAt?: string }[]
+  readAt: number // clock ms when the dashboard read them
 }

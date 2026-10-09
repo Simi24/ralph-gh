@@ -86,6 +86,34 @@ test('a running step shows the time since its last event, not a frozen gap', () 
   expect(since(at, Date.parse('2026-10-09T10:34:00+02:00'))).toBe('') // a clock behind the log reads as nothing
 })
 
+test('the final review reads as rounds, a verdict and what runs now', () => {
+  const at = (t: string, text: string) => `2026-10-09T${t}+02:00 [status] PRD ${text}`
+  const head = ['x ralph-gh session: s', 'x PRD: #69']
+  const after = (...lines: string[]) => parseRun([...head, ...lines].join('\n'))!.final
+  expect(after(at('15:06:48', 'final-review session started'))).toEqual({ round: 1, verdict: 'pending', activity: 'review', since: '2026-10-09T15:06:48+02:00' })
+  const fixing = after(
+    at('15:06:48', 'final-review session started'),
+    at('15:19:19', 'final-review session finished (exit 0, 750s)'),
+    at('15:19:25', 'final-fix session started'),
+  )
+  expect([fixing?.round, fixing?.verdict, fixing?.activity]).toEqual([1, 'fail', 'fix'])
+  const reviewingAgain = after(
+    at('15:06:48', 'final-review session started'),
+    at('15:19:19', 'final-review session finished (exit 0, 750s)'),
+    at('15:19:25', 'final-fix session started'),
+    at('15:25:00', 'final-fix session finished (exit 0, 335s)'),
+    at('15:29:00', 'final-review session started'),
+  )
+  expect([reviewingAgain?.round, reviewingAgain?.verdict, reviewingAgain?.activity]).toEqual([2, 'fail', 'review'])
+  const passed = after(
+    at('15:29:00', 'final-review session started'),
+    at('15:35:00', 'final-review session finished (exit 0, 360s)'),
+    at('15:35:05', 'run ended: final review passed, merge withheld: autonomy=halt-each-pr'),
+  )
+  expect([passed?.verdict, passed?.activity]).toEqual(['pass', null])
+  expect(parseRun(head.join('\n'))!.final).toBeUndefined()
+})
+
 test('toasts only what is new in the same run', () => {
   const before = parseRun(RUN)!
   const after = parseRun(`${RUN}

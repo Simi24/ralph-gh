@@ -68,6 +68,7 @@ export function parseRun(log: string): Board | null {
     }
     const final = /\bPR #(\d+) opened\b/.exec(text) // PRD-level: ticket PRs are logged under their ticket
     if (final) board.finalPr = Number(final[1])
+    finalPhase(board, text, at)
     if (/^final-review session/.test(text)) board.prdStage = Math.max(board.prdStage, 2)
     const ended = /^run ended: (.*)$/.exec(text)
     if (ended) board.ended = ended[1]
@@ -78,6 +79,29 @@ export function parseRun(log: string): Board | null {
   }
   board.tickets = [...tickets.values()].sort((a, b) => a.number - b.number)
   return board
+}
+
+/**
+ * The final review's rounds from PRD-level lines. A final-fix starting after a finished review means that
+ * review failed; `run ended: final review passed|failed` settles the last verdict.
+ */
+function finalPhase(board: Board, text: string, at: string): void {
+  const phase = board.final ?? { round: 0, verdict: 'pending' as const, activity: null }
+  if (/^final-review session started/.test(text)) {
+    board.final = { round: phase.round + 1, verdict: phase.verdict, activity: 'review', since: at }
+  } else if (/^final-review session finished/.test(text)) {
+    board.final = { ...phase, verdict: 'pending', activity: null, since: at }
+  } else if (/^final-fix session started/.test(text)) {
+    board.final = { ...phase, verdict: phase.activity === null ? 'fail' : phase.verdict, activity: 'fix', since: at }
+  } else if (/^final-fix session finished/.test(text)) {
+    board.final = { ...phase, activity: 'verify', since: at }
+  } else if (/^run ended: final review passed/.test(text)) {
+    board.final = { ...phase, verdict: 'pass', activity: null }
+  } else if (/^run ended: final review failed/.test(text)) {
+    board.final = { ...phase, verdict: 'fail', activity: null }
+  } else if (/^run ended:/.test(text) && board.final) {
+    board.final = { ...phase, activity: null }
+  }
 }
 
 /** The lines worth a toast among those added since the previous poll. */
