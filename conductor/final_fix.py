@@ -13,7 +13,7 @@ from conductor.final_prompt import final_fix_prompt
 from conductor.findings import blocking_findings, tail
 from conductor.markers import OutcomeKind, outcome_of
 from conductor.observer import NullObserver, Observer
-from conductor.ports import Agents, Git, SessionRequest
+from conductor.ports import SHA, Agents, Git, SessionRequest
 from conductor.state_dir import prd_dir
 from conductor.usage_limit import describe
 from conductor.verify import check_verify
@@ -30,6 +30,7 @@ class FixStatus(Enum):
 class FixRound:
     status: FixStatus
     detail: str = ""
+    pushed_sha: str = ""  # FIXED only: the commit pushed to the integration branch
 
 
 def run_fix_round(
@@ -66,9 +67,12 @@ def run_fix_round(
         if not verify.ok:
             return FixRound(FixStatus.FAILED, f"verify fails after the fix:\n\n```\n{tail(verify.output, 40)}\n```")
         try:
+            pushed = git.head_sha(worktree)
+            if not SHA.match(pushed):
+                return FixRound(FixStatus.FAILED, "could not read the commit the fix would push")
             git.push(worktree, integration)
         except Exception as error:  # noqa: BLE001 - e.g. the branch moved: nothing was pushed
             return FixRound(FixStatus.FAILED, f"could not push the fix to {integration}: {error}")
-        return FixRound(FixStatus.FIXED)
+        return FixRound(FixStatus.FIXED, pushed_sha=pushed)
     finally:
         git.remove_worktree(worktree, branch)

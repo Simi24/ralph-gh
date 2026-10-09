@@ -8,6 +8,7 @@ On FAIL one fix session per round gets the BLOCKING findings (bounded by
 provably safe (gate_scope.py). Every doubt means no merge.
 """
 import re
+import time
 from pathlib import Path
 
 from conductor import labels
@@ -18,12 +19,13 @@ from conductor.final_fix import FixStatus, run_fix_round
 from conductor.final_prompt import Rescope, final_review_prompt
 from conductor.findings import blocking_findings
 from conductor.gate_scope import Scope, resolve_gate_scope
+from conductor.head_wait import wait_for_head
 from conductor.markers import Verdict, verdict_of
 from conductor.observer import Observer
 from conductor.ports import SHA, Agents, Forge, Git, Issue, PullRequest, SessionRequest, SessionResult
 from conductor.result import EXIT_INCOMPLETE, EXIT_OK, RunResult
 from conductor.state_dir import prd_dir
-from conductor.usage_limit import UNKNOWN_RESET, UsageLimitHit, describe
+from conductor.usage_limit import UNKNOWN_RESET, Sleep, UsageLimitHit, describe
 from conductor.verdict_comment import verdict_comment
 
 _CONVENTIONAL = re.compile(r"^[a-z]+(\([^)]*\))?!?: \S")
@@ -129,7 +131,7 @@ def _save_verdict(config: Config, round_no: int, text: str) -> Path | None:
 
 def run_final(
     config: Config, forge: Forge, agents: Agents, git: Git, integration: str,
-    notes: Path | None = None, obs: Observer | None = None,
+    notes: Path | None = None, obs: Observer | None = None, sleep: Sleep = time.sleep,
 ) -> RunResult:
     tickets = forge.list_sub_issues(config.prd)
     not_started = not_started_reason(tickets)
@@ -141,9 +143,18 @@ def run_final(
     fixes = 0
     prev_sha = ""
     prev_verdict: Path | None = None
+    pushed_sha = ""  # the commit the last fix round pushed: the only head the next review may see
     while True:
         round_no = fixes + 1
-        head_sha = forge.pr_head_sha(pr.number)
+        if pushed_sha:  # GitHub may still report the old head right after the push: wait for ours
+            if not wait_for_head(forge, pr.number, pushed_sha, sleep):
+                return RunResult(
+                    EXIT_INCOMPLETE,
+                    f"final review not started: the PR head never reported the fix commit {pushed_sha[:7]}",
+                )
+            head_sha = pushed_sha
+        else:
+            head_sha = forge.pr_head_sha(pr.number)
         if not SHA.match(head_sha):
             return RunResult(EXIT_INCOMPLETE, "final review not started: reviewed head commit unknown")
         scope = resolve_gate_scope(
@@ -187,6 +198,7 @@ def run_final(
             )
             return RunResult(EXIT_INCOMPLETE, f"final fix round {fixes} {fix.status.value}")
         prev_sha = head_sha
+        pushed_sha = fix.pushed_sha
         prev_verdict = _save_verdict(config, round_no, result.text)
 
     if forge.pr_head_sha(pr.number) != head_sha:
