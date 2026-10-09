@@ -1,0 +1,6 @@
+{
+  "name": "ralph-dashboard",
+  "version": "0.1.0",
+  "description": "Live view of a ralph-gh run inside Claude Code: a ticket board pane, status line, toasts and a Drain button.",
+  "types": "./types/index.d.ts"
+}

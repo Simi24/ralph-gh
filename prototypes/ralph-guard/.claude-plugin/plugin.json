@@ -1,0 +1,5 @@
+{
+  "name": "ralph-guard",
+  "version": "0.1.0",
+  "description": "Hard limits for ralph-gh worker sessions: no pushes, no GitHub writes, no --no-verify, no writes outside the worktree. Active only when RALPH_GUARD=1."
+}
