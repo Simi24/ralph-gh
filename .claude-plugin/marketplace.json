@@ -1,0 +1,12 @@
+{
+  "name": "ralph-gh",
+  "owner": { "name": "Simone Paolo Petta" },
+  "metadata": { "description": "ralph-gh: drive a PRD to merged PRs with one claude session per ticket." },
+  "plugins": [
+    {
+      "name": "ralph-gh",
+      "source": "./",
+      "description": "Drive a PRD's sub-issues to a merged PR: a deterministic conductor, one claude session and worktree per ticket."
+    }
+  ]
+}

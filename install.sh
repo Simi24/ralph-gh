@@ -70,7 +70,7 @@ else
   rm -f "$DEST/version.txt"
 fi
 
-for f in "$SRC"/agents/*.md; do
+for f in "$SRC"/worker-bundle/agents/*.md; do
   install_file "$f" "$AGENTS/$(basename "$f")"
 done
 

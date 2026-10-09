@@ -55,7 +55,19 @@ Installed user-level (`~/.claude/agents/`, or `$CLAUDE_CONFIG_DIR/agents/`), so 
 
 A repo can use its own reviewers: set `reviewer_agent` / `ticket_gate_agent` in `.ralph-gh.toml` (the run stops at startup if no agent with that frontmatter `name:` exists in the user or repo agents directory). A repo can also declare its own critical paths in `AGENTS.md` (code whose failure corrupts state, authorizes actions, or handles untrusted input) to force the reviewer's deepest tier on any diff that touches them.
 
-## Install
+## Install as a Claude Code plugin
+
+This repository is a Claude Code marketplace that lists one plugin, `ralph-gh`:
+
+```
+/plugin install ralph-gh --marketplace Simi24/ralph-gh
+```
+
+The plugin ships the conductor, its `ralph-gh` launcher and the `/ralph-gh` skill. `/ralph-gh run --prd N` starts the conductor from the installed plugin (`${CLAUDE_PLUGIN_ROOT}/ralph-gh`), which finds its own package relative to where it is installed: no path to configure. Update with `claude plugin update`. The two reviewer agents live in `worker-bundle/agents/`, a folder the plugin does not load, so they never show up in interactive sessions.
+
+To develop on ralph-gh, add the working copy as a folder marketplace (`/plugin marketplace add /path/to/ralph-gh`) and install from it; it reads the files in place. `claude plugin validate .` checks the manifests and is part of this repo's verify commands. The `install.sh` route below stays until the plugin fully replaces it.
+
+## Install with install.sh
 
 ```bash
 git clone <this-repo>
