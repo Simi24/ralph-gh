@@ -66,7 +66,7 @@ def _run(repo: RepoContext, config: Config) -> int:
         forge = GhForge(repo.name, subprocess_runner(repo.root))
         observer = Observer(forge, prd=config.prd, state_root=config.state_root, repo_root=repo.root, echo=True)
         result = run(
-            config, forge, ClaudeAgents(stop.sessions), GitCli(repo.root),
+            config, forge, ClaudeAgents(stop.sessions, allow_manifest_edits=config.allow_manifest_edits), GitCli(repo.root),
             env=HostEnvironment(repo.root, config.state_root / "run.log"), observer=observer, stop=stop,
         )
     finally:

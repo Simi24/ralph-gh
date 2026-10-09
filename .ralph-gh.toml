@@ -6,6 +6,8 @@ verify_commands = [
   "python3 -m unittest discover -s tests -t .",
   "bash -n install.sh",
   "claude plugin validate .",
+  "claude plugin validate worker-bundle",
+  "claude plugin test worker-bundle",
 ]
 
 branch_prefix = "feat"

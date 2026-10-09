@@ -129,7 +129,7 @@ class FinalPrTest(unittest.TestCase):
     def test_the_reviewer_is_the_configured_agent_without_a_model(self) -> None:
         self.go()
         review = [r for r in self.agents.requests if r.role == "final-review"][0]
-        self.assertEqual((review.agent, review.model), ("ralph-gate-reviewer", None))
+        self.assertEqual((review.agent, review.model), ("ralph-guard:ralph-gate-reviewer", None))
         self.assertIn(f"#{PRD}", review.prompt)
 
     def test_tickets_stay_open_and_integrated_until_the_final_pr_merges(self) -> None:

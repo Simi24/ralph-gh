@@ -14,6 +14,7 @@ import urllib.request
 from pathlib import Path
 
 from conductor.sessions import run_detached
+from conductor.worker_bundle import bundle_dir
 
 HEALTH_TIMEOUT = 5  # seconds per attempt
 
@@ -24,9 +25,10 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class HostEnvironment:
-    def __init__(self, repo_root: Path, log_file: Path | None = None) -> None:
+    def __init__(self, repo_root: Path, log_file: Path | None = None, bundle: Path | None = None) -> None:
         self.repo_root = repo_root
         self.log_file = log_file
+        self.bundle = bundle or bundle_dir()
 
     def _run(self, *argv: str) -> subprocess.CompletedProcess[str]:
         return run_detached(list(argv), cwd=self.repo_root)  # own session: Ctrl-C-proof
@@ -70,7 +72,18 @@ class HostEnvironment:
 
     def agent_roots(self) -> list[Path]:
         config_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
-        return [config_dir / "agents", self.repo_root / ".claude" / "agents"]
+        return [config_dir / "agents", self.repo_root / ".claude" / "agents", self.bundle / "agents"]
+
+    def worker_bundle_problem(self) -> str | None:
+        if not (self.bundle / ".claude-plugin" / "plugin.json").is_file():
+            return f"not found at {self.bundle}"
+        try:
+            proc = self._run("claude", "plugin", "validate", str(self.bundle))
+        except OSError as e:
+            return f"could not run `claude plugin validate`: {e}"
+        if proc.returncode != 0:
+            return f"the installed Claude Code cannot load it (`claude plugin validate` failed: {proc.stderr.strip() or proc.stdout.strip()})"
+        return None
 
     def run_shell(self, command: str) -> int:
         log = self.log_file.open("ab") if self.log_file else None
