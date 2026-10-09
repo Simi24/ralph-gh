@@ -17,24 +17,32 @@ function engine(on: any, env: Record<string, string>, failEnv = false, links: Re
 
 const caller = ($: any) => (input: object): Promise<any> => $.tool.call(input)
 
-// `claude plugin test` loads the hooks module of the folder it runs in. From the repo root that is
-// the dashboard, not the guard, so a guard test stands down there; `claude plugin test worker-bundle` runs it.
-// An active guard refuses a push, and so does one that fails closed.
-async function guardLoaded($: any): Promise<boolean> {
-  const result = await caller($)({ tool: 'Bash', command: 'git push origin feat/x' })
-  return result.deny !== undefined
+// `claude plugin test <dir>` loads the hooks module of <dir> and runs every test file below it. From the
+// repo root that module is the dashboard (it registers `/ralph`), so these tests stand down there; they
+// run under `claude plugin test worker-bundle`. The skip never looks at what the guard does: anything
+// but the dashboard in the loaded module means the guard tests run, and fail if the guard misbehaves.
+function watchForDashboard(on: any): () => Promise<boolean> {
+  let registered = false
+  on('command.register', () => {
+    registered = true
+    return { value: { command: 'ralph' } }
+  })
+  on('session.start', (_$: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
+  return async () => registered
 }
 
-/** A test that runs only where the ralph-guard hooks are the loaded module. */
+/** A test of the guard's hooks: it runs wherever the loaded module is not the dashboard. */
 function guardTest(name: string, setup: (on: any) => void, body: ($: any) => Promise<void>) {
   test(name, async ($, on) => {
+    const dashboardSeen = watchForDashboard(on)
     setup(on)
-    if (await guardLoaded($)) await body($)
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    if (await dashboardSeen()) return
+    await body($)
   })
 }
 
-test('inert without RALPH_GUARD=1', async ($, on) => {
-  engine(on, {})
+guardTest('inert without RALPH_GUARD=1', on => engine(on, {}), async $ => {
   const result = await caller($)({ tool: 'Bash', command: 'git push origin feat/x' })
   expect(result.deny).toBeUndefined()
 })
@@ -56,8 +64,7 @@ guardTest('active: lets read-only gh and in-worktree writes through, refuses out
   expect((await call({ tool: 'Write', file_path: 'package.json', content: 'x' })).deny).toBeDefined()
 })
 
-test('active: extra roots and manifest edits are opt-in', async ($, on) => {
-  engine(on, { ...ACTIVE, RALPH_GUARD_ROOTS: '/notes', RALPH_GUARD_ALLOW_MANIFESTS: '1' })
+guardTest('active: extra roots and manifest edits are opt-in', on => engine(on, { ...ACTIVE, RALPH_GUARD_ROOTS: '/notes', RALPH_GUARD_ALLOW_MANIFESTS: '1' }), async $ => {
   const call = caller($)
   expect((await call({ tool: 'Write', file_path: '/notes/x.md', content: 'x' })).deny).toBeUndefined()
   expect((await call({ tool: 'Write', file_path: 'package.json', content: 'x' })).deny).toBeUndefined()
