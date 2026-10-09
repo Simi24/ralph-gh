@@ -71,9 +71,15 @@ This repository is a Claude Code marketplace that lists one plugin, `ralph-gh`:
 /plugin install ralph-gh --marketplace Simi24/ralph-gh
 ```
 
-The plugin ships the conductor, its `ralph-gh` launcher and the `/ralph-gh` skill. `/ralph-gh run --prd N` starts the conductor from the installed plugin (`${CLAUDE_PLUGIN_ROOT}/ralph-gh`), which finds its own package relative to where it is installed: no path to configure. Update with `claude plugin update`. The two reviewer agents live in `worker-bundle/agents/`, a folder the plugin does not load, so they never show up in interactive sessions.
+The plugin ships the conductor, its `ralph-gh` launcher, the `/ralph-gh` skill and the `/ralph` dashboard. `/ralph-gh run --prd N` starts the conductor from the installed plugin (`${CLAUDE_PLUGIN_ROOT}/ralph-gh`), which finds its own package relative to where it is installed: no path to configure. Update with `claude plugin update`. The two reviewer agents live in `worker-bundle/agents/`, a folder the plugin does not load, so they never show up in interactive sessions.
 
-To develop on ralph-gh, add the working copy as a folder marketplace (`/plugin marketplace add /path/to/ralph-gh`) and install from it; it reads the files in place. `claude plugin validate .` checks the manifests and is part of this repo's verify commands. The `install.sh` route below stays until the plugin fully replaces it.
+To develop on ralph-gh, add the working copy as a folder marketplace (`/plugin marketplace add /path/to/ralph-gh`) and install from it; it reads the files in place. `claude plugin validate .` checks the manifests and `claude plugin test .` runs the dashboard's hook tests (`tests/dashboard/*.test.ts`); both are part of this repo's verify commands. The `install.sh` route below stays until the plugin fully replaces it.
+
+### The `/ralph` dashboard
+
+`/ralph [owner/repo]` opens a pane that follows a run from inside Claude Code; `/ralph off` (or closing the pane) stops it. It is on demand: loading the plugin only registers the command, with no timer, no `gh` call and no file read. While watching it polls the local `run.log` every few seconds and reads GitHub (read-only `gh api`) when the pane opens and when the log shows a new event, never on an unchanged poll; each queued ticket's blockers are read once per PRD. Without GitHub data the pane still draws from `run.log` alone.
+
+The pane shows the PRD's pipeline and the integration branch's state, a progress bar with counts (done, in flight, need attention, ready, waiting, not queued), the tickets in flight as pipelines with title, PR and elapsed time, the ones that need attention, the next ready tickets, and collapsible waiting and done groups. Toasts and a status line appear only while watching. The **Drain** button writes the `STOP` file of the watched repo's state dir (the same file `ralph-gh stop` writes) and nothing else. The code is in `hooks/` (`parse.ts` and `plan.ts` are pure modules, `register.tsx` is the hooks module).
 
 ## Install with install.sh
 
