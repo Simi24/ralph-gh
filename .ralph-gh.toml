@@ -12,8 +12,9 @@ base_branch = "main"
 gate_fix_rounds = 2
 session_timeout = 7200
 
-# Writing sessions on Sonnet; review judgment stays on the Opus-pinned reviewer agents.
-model = "claude-sonnet-5"
+# Writing sessions on the latest Sonnet (the alias follows new releases); review judgment stays
+# on the Opus-pinned reviewer agents.
+model = "sonnet"
 
 # Docs that must stay in sync with behavior (named in implementer and fix prompts, never pasted).
 doc_files = ["README.md", "example.ralph-gh.toml"]
