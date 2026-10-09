@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.0.0](https://github.com/Simi24/ralph-gh/compare/v1.0.0...v2.0.0) (2026-10-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* `install.sh` no longer installs anything. It is a migration stub that prints the plugin install command and what to remove from a legacy `~/.claude/ralph-gh` install. Install and update through `/plugin install` and `claude plugin update` instead.
+* the bash orchestrator (`ralph-gh.sh`), its iteration prompt and `.ralph-gh.config` are removed. Repos configure ralph-gh with `.ralph-gh.toml` instead, and the conductor prints a migration table when only the old file exists. Runs are started per PRD with `ralph-gh run --prd N`, and run state lives under `~/.claude/ralph-gh/state/`.
+
+### Features
+
+* replace the inner review gate with an in-context self-check ([#51](https://github.com/Simi24/ralph-gh/issues/51)) ([f0c056d](https://github.com/Simi24/ralph-gh/commit/f0c056d70f2fb255754576188b4fae88dcbf680e))
+* rewrite ralph-gh as a deterministic Python conductor ([#68](https://github.com/Simi24/ralph-gh/issues/68)) ([02c7567](https://github.com/Simi24/ralph-gh/commit/02c7567ba5b495a92e0e4fde62c14313a78d1acc))
+* run the external gate as the reviewer agent, no wrapper session ([#47](https://github.com/Simi24/ralph-gh/issues/47)) ([d131e4f](https://github.com/Simi24/ralph-gh/commit/d131e4fe124d43ef18c0559724d775f72a457551))
+* ship ralph-gh as a Claude Code plugin, with ralph-guard and an on-demand dashboard ([#79](https://github.com/Simi24/ralph-gh/issues/79)) ([3df75e4](https://github.com/Simi24/ralph-gh/commit/3df75e47ddf71f16723bf972cb97074134aa79ba))
+* triage gate findings and scope re-gates to the fix diff ([#46](https://github.com/Simi24/ralph-gh/issues/46)) ([de66fe9](https://github.com/Simi24/ralph-gh/commit/de66fe98788224248ed8aaa47e2c9cd33ebe60a4)), closes [#45](https://github.com/Simi24/ralph-gh/issues/45)
+
+
+### Bug Fixes
+
+* 🐛 review the commit a final fix pushed, never a lagging PR head ([#94](https://github.com/Simi24/ralph-gh/issues/94)) ([#95](https://github.com/Simi24/ralph-gh/issues/95)) ([ff1ddc9](https://github.com/Simi24/ralph-gh/commit/ff1ddc9d1e0c016d4da351ed21a03d9c7056124a))
+* harden the external gate after the [#46](https://github.com/Simi24/ralph-gh/issues/46)/[#47](https://github.com/Simi24/ralph-gh/issues/47) gate follow-ups ([#50](https://github.com/Simi24/ralph-gh/issues/50)) ([6692efa](https://github.com/Simi24/ralph-gh/commit/6692efa01c7e5c5a319a1ca00ddf01d3788aa081))
+
 ## 1.0.0 (2026-09-11)
 
 
