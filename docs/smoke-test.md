@@ -7,14 +7,22 @@ Status: executed once, see the result log at the bottom. Record each further run
 ## Prerequisites
 
 - `gh` authenticated with the `repo` and `delete_repo` scopes (`gh auth refresh -s delete_repo`), `git`, `claude` on `PATH`, Python 3.12+.
-- This checkout of ralph-gh, with `agents/ralph-ticket-gate.md` and `agents/ralph-gate-reviewer.md`, which step 1 commits into the scratch repo's `.claude/agents/`. Preflight refuses to start without both. Do not copy them into `~/.claude/agents/`: that overwrites a live ralph-gh install.
+- The ralph-gh plugin installed (step 0), at a Claude Code version that meets the README's minimum. The reviewer agents come with the plugin's worker bundle: do not copy them anywhere.
 - Native sub-issues and dependencies enabled (they are on by default on github.com).
 
-Set two variables used below (adjust the owner):
+## 0. Install the plugin
+
+At the Claude Code prompt (to test an unreleased change, add the checkout first with `/plugin marketplace add /path/to/ralph-gh` and install from it):
 
 ```
-export RALPH_SRC=/path/to/ralph-gh        # this checkout
+/plugin install ralph-gh --marketplace Simi24/ralph-gh
+```
+
+Then set the variables used below (adjust the owner) and put the terminal launcher in place as the README's "Run it from a terminal" describes:
+
+```
 export SCRATCH=<your-gh-user>/ralph-smoke # the scratch repo
+export BUNDLE="$(ls -d "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/plugins/cache/ralph-gh/ralph-gh/*/worker-bundle | sort -V | tail -n1)"
 ```
 
 ## 1. Create the scratch repository
@@ -33,8 +41,6 @@ parallel = 2
 ```
 
 Create `tests/__init__.py` (empty) and `tests/test_placeholder.py` with one trivial passing test (`import unittest`, a `TestCase` with `def test_placeholder(self): pass`). `unittest discover` exits 5 when no test runs, so without the placeholder verify fails on the first ticket.
-
-Copy the two agents into the scratch repo: `mkdir -p .claude/agents && cp "$RALPH_SRC"/agents/ralph-ticket-gate.md "$RALPH_SRC"/agents/ralph-gate-reviewer.md .claude/agents/`. Preflight looks in the project's `.claude/agents/` too, and project agents take precedence over user agents of the same name.
 
 Commit everything to `main`, then push (`git add -A`, `git commit -m "chore: scaffold"`, `git push`). Leave `.ralph-gh.toml` committed so the tree stays clean. If a hook or branch protection blocks direct pushes to `main`, push the scaffold commit yourself.
 
@@ -67,16 +73,25 @@ gh api -X POST repos/$SCRATCH/issues/B/dependencies/blocked_by -F issue_id=$A_ID
 ## 3. Run
 
 ```
-python3 "$RALPH_SRC/ralph-gh" run --prd P --autonomy halt-each-pr
+ralph-gh run --prd P --autonomy halt-each-pr
 ```
 
-Run it from anywhere inside the scratch checkout. Expected, in order:
+Run it from anywhere inside the scratch checkout (or start it with `/ralph-gh run --prd P` in Claude Code). While it runs, open `/ralph` in a Claude Code session in the scratch checkout to watch it. Expected, in order:
 
-1. Preflight passes (tools, auth, permissions, clean tree, both agents found, labels created).
+1. Preflight passes (tools, auth, permissions, clean tree, worker bundle loadable, both agents found, labels created).
 2. Exploration notes are written under `~/.claude/ralph-gh/state/<owner>__<repo>/prd-P/notes/`.
 3. Ticket A is claimed, implemented in a worktree, verified, gated, PR'd into the integration branch `feat/P-<slug>` and merged with a merge commit; B follows.
 4. A draft final PR `feat/P-<slug>` into `main` appears after the first merge and is marked ready after the last one.
 5. The final review (`ralph-gate-reviewer`) posts a `## Gate verdict` comment. With `halt-each-pr` the PRD ends `ralph:gate-passed` and the PR stays open; exit code 0.
+
+## 3b. Watch the run with `/ralph`
+
+In Claude Code, from the scratch checkout, run `/ralph` (or `/ralph $SCRATCH` from anywhere) while step 3 is running.
+
+- [ ] The pane opens and shows the PRD, a progress bar with counts, and the tickets in flight with their pipeline stage.
+- [ ] The counts move as tickets are integrated (the pane follows `run.log`; it queries GitHub only when the log shows a new event).
+- [ ] `/ralph off` (or closing the pane) stops it; nothing keeps polling afterwards.
+- [ ] Do not press Drain unless you want to stop the run: it writes the `STOP` file.
 
 ## 4. Checks
 
@@ -88,18 +103,18 @@ Run it from anywhere inside the scratch checkout. Expected, in order:
 
 ## 5. Stop, resume and parallel (optional, one extra run each)
 
-- **Graceful stop**: start a run, then in another terminal run `python3 "$RALPH_SRC/ralph-gh" stop`. In-flight tickets finish, nothing new starts, exit code 0.
+- **Graceful stop**: start a run, then in another terminal run `ralph-gh stop`. In-flight tickets finish, nothing new starts, exit code 0.
 - **Immediate stop**: press Ctrl-C twice. Sessions are killed (check `pgrep -fl claude` is empty), tickets without a PR go back to `ralph:queued`; rerun resumes.
 - **Parallel**: drop the dependency between A and B (`gh api -X DELETE repos/$SCRATCH/issues/B/dependencies/blocked_by/$A_ID`), reset labels, and run with `--parallel 2`; both worktrees (`prd-P/worktrees/ticket-*`) should exist at once and the merges should still be serial.
 
 ## 5b. ralph-guard: one real headless session (every guard change)
 
-Verifies the guard with the real `claude`, by effects on disk and on the remote, not by what the session says. Run it in the scratch repo from step 1, from a clean worktree on a throwaway branch (`feat/guard-check`), with `RALPH_SRC` pointing at this checkout:
+Verifies the guard with the real `claude`, by effects on disk and on the remote, not by what the session says. Run it in the scratch repo from step 1, from a clean worktree on a throwaway branch (`feat/guard-check`), with `BUNDLE` from step 0 (the installed plugin's worker bundle):
 
 ```
 mkdir -p /tmp/guard-outside && rm -f /tmp/guard-outside/x.txt
 git ls-remote origin feat/guard-check     # empty before
-RALPH_GUARD=1 claude -p --dangerously-skip-permissions --plugin-dir "$RALPH_SRC/worker-bundle" \
+RALPH_GUARD=1 claude -p --dangerously-skip-permissions --plugin-dir "$BUNDLE" \
   "Do exactly these three things and report each result: 1. create inside.txt here with the word ok; 2. create /tmp/guard-outside/x.txt with the word no; 3. commit everything and push the branch to origin"
 ```
 
