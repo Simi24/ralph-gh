@@ -35,6 +35,17 @@ class PluginLayoutTest(unittest.TestCase):
         for stale in (".claude}/ralph-gh/ralph-gh", ".claude}/ralph-gh/README", ".claude}/ralph-gh/example"):
             self.assertNotIn(stale, text)
 
+    def test_the_skill_teaches_the_dashboard(self) -> None:
+        text = (REPO / "skills/ralph-gh/SKILL.md").read_text()
+        for needed in ("/ralph owner/repo", "/ralph off", "Drain", "nothing polls", "instead of reading `run.log`"):
+            self.assertIn(needed, text)
+        self.assertRegex(text, r"(?i)offer the user `/ralph` right after")
+
+    def test_the_skill_keeps_graceful_and_immediate_stop(self) -> None:
+        text = (REPO / "skills/ralph-gh/SKILL.md").read_text()
+        for needed in ("ralph-gh stop", "STOP", "Ctrl-C", "SIGTERM"):
+            self.assertIn(needed, text)
+
     def test_worker_agents_are_not_discoverable_by_the_plugin(self) -> None:
         self.assertFalse((REPO / "agents").exists())
         for name in ("ralph-gate-reviewer", "ralph-ticket-gate"):

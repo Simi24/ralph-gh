@@ -17,7 +17,7 @@ This skill is a thin wrapper around the installed `ralph-gh` launcher (`${CLAUDE
 "${CLAUDE_PLUGIN_ROOT}/ralph-gh" run $ARGUMENTS
 ```
 
-4. While it runs it prints progress. When it exits, show the user the contents of `last-run.md`. It lives in the per-repo state directory, **not** in the repo:
+4. Right after the run starts, offer the user `/ralph` to follow it (see "Following a run"). While it runs it prints progress. When it exits, show the user the contents of `last-run.md`. It lives in the per-repo state directory, **not** in the repo:
 
 ```bash
 state="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/ralph-gh/state/$(gh repo view --json nameWithOwner --jq .nameWithOwner | sed 's#/#__#')"
@@ -25,6 +25,16 @@ cat "$state/last-run.md"
 ```
 
    Also tell the user the exit code (0 done or withheld by autonomy or stopped by the operator, 1 startup or config error, 2 CLI usage error, 3 the run ended incomplete, 129 killed by SIGHUP) and that the PRD carries a single `## ralph-gh status` comment, edited in place, with the phase timeline of the whole run — the place to look if something seems stalled. The final review's verdicts are `## Gate verdict` comments on the final PR.
+
+## Following a run
+
+The `/ralph` dashboard is a pane inside Claude Code that follows a run: the PRD's pipeline, a progress bar, the tickets in flight, the ones that need attention and the next ready ones.
+
+- Offer the user `/ralph` right after starting a run, e.g. "Run `/ralph` to follow it."
+- When the user asks how a run is going, point them to `/ralph` instead of reading `run.log` or tailing it, and do not summarize the log yourself.
+- `/ralph` watches the current repo; `/ralph owner/repo` watches another one; `/ralph off` (or closing the pane) stops watching.
+- The pane's **Drain** button requests a graceful stop: it writes the same `STOP` file as `ralph-gh stop`, and nothing else.
+- It is on demand: nothing polls until `/ralph` is called. Loading the plugin only registers the command, and after `/ralph off` polling stops.
 
 ## Arguments
 
@@ -55,4 +65,4 @@ The conductor runs as a foreground process inside this session's Bash tool call,
 touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/ralph-gh/state/<owner>__<repo>/STOP"
 ```
 
-This requests a **graceful** stop: in-flight tickets finish normally, nothing new is dispatched, and the run exits (`stopped by operator`, exit 0). There is no way to request an **immediate** stop (second `Ctrl-C` or `SIGTERM`) from inside this session — that requires signaling the process from a real shell, e.g. `kill -TERM <pid>`; the pid is the one in the `lock` file of the same state directory. See the README's "Stopping a run" section.
+The dashboard's **Drain** button does the same. This requests a **graceful** stop: in-flight tickets finish normally, nothing new is dispatched, and the run exits (`stopped by operator`, exit 0). There is no way to request an **immediate** stop (second `Ctrl-C` or `SIGTERM`) from inside this session — that requires signaling the process from a real shell, e.g. `kill -TERM <pid>`; the pid is the one in the `lock` file of the same state directory. See the README's "Stopping a run" section.
