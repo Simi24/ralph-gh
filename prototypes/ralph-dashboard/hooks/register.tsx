@@ -196,8 +196,9 @@ export const register: Register = on => {
     const isWaitingOpen = await read($, showWaiting)
     const columns = Math.max(30, (e.props as { bodyColumns?: number }).bodyColumns ?? e.viewport?.columns ?? 60)
 
+    // A pipeline never shrinks: in a narrow row only the title gives way.
     const Flow = ({ list }: { list: Dot[] }) => (
-      <Box>
+      <Box flexShrink={0}>
         {list.map((dot, i) => (
           <Text color={dot.color} dimColor={dot.dim}>
             {dot.glyph}
@@ -286,11 +287,15 @@ export const register: Register = on => {
             <Box flexDirection="column">
               <Box>
                 <Flow list={dots(STAGES.length, t.stage, t.tone)} />
-                <Text bold>  #{t.number}</Text>
-                <Text> {known?.tickets.find(k => k.number === t.number)?.title ?? ''}</Text>
-                <Text dimColor>
-                  {t.pr ? `  PR #${t.pr}` : ''}  {elapsed(t.firstAt, t.at)}
-                </Text>
+                <Box flexShrink={0}>
+                  <Text bold>{`  #${t.number} `}</Text>
+                </Box>
+                <Box flexShrink={1} flexGrow={1}>
+                  <Text wrap="truncate-end">{known?.tickets.find(k => k.number === t.number)?.title ?? ''}</Text>
+                </Box>
+                <Box flexShrink={0}>
+                  <Text dimColor>{`${t.pr ? `  PR #${t.pr}` : ''}  ${elapsed(t.firstAt, t.at)}`}</Text>
+                </Box>
               </Box>
               <Text dimColor>{'              '}{STAGES[t.stage]}: {t.text}</Text>
             </Box>
