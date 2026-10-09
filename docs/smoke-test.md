@@ -2,12 +2,12 @@
 
 This is the end-to-end check of the Python conductor against the real GitHub and the real `claude` CLI. It is **not** run by the unit tests and **not** run automatically: it creates a GitHub repository and spends real Claude sessions (a few ordinary sessions plus two reviewers), so a human approves and runs it.
 
-Status: not yet executed. Record the result at the bottom when it is.
+Status: executed once, see the result log at the bottom. Record each further run there.
 
 ## Prerequisites
 
 - `gh` authenticated with the `repo` and `delete_repo` scopes (`gh auth refresh -s delete_repo`), `git`, `claude` on `PATH`, Python 3.12+.
-- This checkout of ralph-gh, with `agents/ralph-ticket-gate.md` and `agents/ralph-gate-reviewer.md` copied or symlinked into `~/.claude/agents/` (or `$CLAUDE_CONFIG_DIR/agents/`). Preflight refuses to start without both.
+- This checkout of ralph-gh, with `agents/ralph-ticket-gate.md` and `agents/ralph-gate-reviewer.md`, which step 1 commits into the scratch repo's `.claude/agents/`. Preflight refuses to start without both. Do not copy them into `~/.claude/agents/`: that overwrites a live ralph-gh install.
 - Native sub-issues and dependencies enabled (they are on by default on github.com).
 
 Set two variables used below (adjust the owner):
@@ -32,7 +32,11 @@ gate_fix_rounds = 1
 parallel = 2
 ```
 
-Create `tests/__init__.py` (empty) and commit everything to `main`, then push (`git add -A`, `git commit -m "chore: scaffold"`, `git push`). Leave `.ralph-gh.toml` committed so the tree stays clean.
+Create `tests/__init__.py` (empty) and `tests/test_placeholder.py` with one trivial passing test (`import unittest`, a `TestCase` with `def test_placeholder(self): pass`). `unittest discover` exits 5 when no test runs, so without the placeholder verify fails on the first ticket.
+
+Copy the two agents into the scratch repo: `mkdir -p .claude/agents && cp "$RALPH_SRC"/agents/ralph-ticket-gate.md "$RALPH_SRC"/agents/ralph-gate-reviewer.md .claude/agents/`. Preflight looks in the project's `.claude/agents/` too, and project agents take precedence over user agents of the same name.
+
+Commit everything to `main`, then push (`git add -A`, `git commit -m "chore: scaffold"`, `git push`). Leave `.ralph-gh.toml` committed so the tree stays clean. If a hook or branch protection blocks direct pushes to `main`, push the scaffold commit yourself.
 
 ## 2. Create the PRD and two tickets
 
@@ -99,4 +103,4 @@ rm -rf ~/.claude/ralph-gh/state/<owner>__<repo>
 
 | Date | ralph-gh commit | Outcome | Notes |
 |------|-----------------|---------|-------|
-|      |                 |         |       |
+| 2026-10-08 | aa97ad0 | PASS | two tickets A→B, parallel=2, halt-each-pr; integration verify green on both merges; ~4 min; scratch repo Simi24/ralph-smoke-20261008 |
