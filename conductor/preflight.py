@@ -129,7 +129,7 @@ def _check_agent(label: str, name: str, env: Environment) -> str | None:
     if find_agent(name, env.agent_roots()) is None:
         return (
             f"{label}: no agent named '{name}' in the user or repo agents directory "
-            "(run install.sh?)"
+            "(is the ralph-gh plugin installed?)"
         )
     return None
 

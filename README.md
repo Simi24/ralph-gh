@@ -65,35 +65,28 @@ This repository is a Claude Code marketplace that lists one plugin, `ralph-gh`:
 
 The plugin ships the conductor, its `ralph-gh` launcher and the `/ralph-gh` skill. `/ralph-gh run --prd N` starts the conductor from the installed plugin (`${CLAUDE_PLUGIN_ROOT}/ralph-gh`), which finds its own package relative to where it is installed: no path to configure. Update with `claude plugin update`. The two reviewer agents live in `worker-bundle/agents/`, a folder the plugin does not load, so they never show up in interactive sessions.
 
-To develop on ralph-gh, add the working copy as a folder marketplace (`/plugin marketplace add /path/to/ralph-gh`) and install from it; it reads the files in place. `claude plugin validate .` checks the manifests and is part of this repo's verify commands. The `install.sh` route below stays until the plugin fully replaces it.
+To develop on ralph-gh, add the working copy as a folder marketplace (`/plugin marketplace add /path/to/ralph-gh`) and install from it; it reads the files in place. `claude plugin validate .` checks the manifests and is part of this repo's verify commands.
 
-## Install with install.sh
+### Terminal command
+
+To run the conductor outside Claude Code, add this function to your shell profile (`~/.zshrc`, `~/.bashrc`) once:
 
 ```bash
-git clone <this-repo>
-cd ralph-gh
-./install.sh
-
-# optional alias (the installer prints the exact line)
-echo 'alias ralph-gh="$HOME/.claude/ralph-gh/ralph-gh"' >> ~/.zshrc
+ralph-gh() {
+  local root
+  root=$(claude plugin list --json | python3 -c 'import json, sys; print(next((p["installPath"] for p in json.load(sys.stdin) if p["id"].startswith("ralph-gh@")), ""))') || return 1
+  [ -n "$root" ] || { echo "ralph-gh: plugin not installed (/plugin install ralph-gh --marketplace Simi24/ralph-gh)" >&2; return 1; }
+  "$root/ralph-gh" "$@"
+}
 ```
 
-`install.sh` deploys, under `$CLAUDE_CONFIG_DIR` (default `~/.claude`): the `conductor/` package and the `ralph-gh` launcher into `ralph-gh/`, the two agents into `agents/`, and the `/ralph-gh` skill into `skills/ralph-gh/`. The skill lets you type `/ralph-gh --prd N ...` inside an interactive Claude Code session and have the session drive the conductor for you.
+Then `ralph-gh run --prd N` and `ralph-gh stop` run the conductor of the installed plugin. The function asks Claude Code where the plugin lives on every call, so `claude plugin update` needs no follow-up step here.
+
+### Moving from install.sh
+
+`install.sh` and its drift check are gone: plugin updates replace them. If `<claude config dir>/ralph-gh/` (default `~/.claude/ralph-gh/`) still holds the old conductor, launcher, `.installed` stamp, or `~/.claude/agents/ralph-*.md` / `~/.claude/skills/ralph-gh/` copies, `ralph-gh run` prints a warning that lists the exact `rm` commands to remove them. The legacy files are never executed; the run always uses the plugin it was started from. Run state under `ralph-gh/state/` is not part of the old install and stays.
 
 Requires: **Python 3.12+** (standard library only, nothing to `pip install`), `claude` (Claude Code CLI), `git`, and `gh` authenticated as a collaborator with **push** and **triage** permission — or higher — on the repo, so it can push branches, merge PRs, and create/edit `ralph:*` labels. Preflight checks all of this for real at startup and exits before spawning any session if something is missing.
-
-## Updating
-
-The copies under `~/.claude/` are a **deployment** of this repo, not a separate thing — a `git pull` alone changes nothing your runs actually use. Redeploy after every pull:
-
-```bash
-git pull
-./install.sh
-```
-
-`install.sh` overwrites the installed copy and, for every installed file that differs from the clone's, first saves the old version as `*.bak` (`config.py.bak`, `ralph-gate-reviewer.md.bak`, ...). Files an older version installed and this one no longer ships (the bash orchestrator `ralph-gh.sh`, its `CLAUDE.md` iteration prompt, the `ralph-refactorer` agent, modules removed from the package) are moved aside as `.bak` too, so nothing stale stays active.
-
-Each install stamps the clone's path and commit SHA into `ralph-gh/.installed`. If you `git pull` and then start a run without reinstalling, the conductor notices its installed copy is behind that clone and prints one line at startup (`WARNING: installed copy is behind your clone (<sha> -> <sha>) — run install.sh`) — advisory only, it never blocks the run, and it fails open when the clone is gone or not a git checkout. It never touches the network.
 
 ## Per-repo setup (one time)
 
@@ -221,7 +214,7 @@ On a match:
 
 ## Releases
 
-Tags and changelogs are automated with [release-please](https://github.com/googleapis/release-please): every push to `main` updates a standing release PR built from the conventional-commit history, and merging it cuts a GitHub release, bumps `version.txt`, and appends to `CHANGELOG.md` — nothing to run by hand. `install.sh` copies `version.txt` next to the launcher (and removes a stale one when your clone has none), so an installed copy always says which cut it is. Because the final PR is squash-merged, each PRD lands on the base branch as one conventional commit, which is what release-please reads.
+Tags and changelogs are automated with [release-please](https://github.com/googleapis/release-please): every push to `main` updates a standing release PR built from the conventional-commit history, and merging it cuts a GitHub release, bumps the plugin version, and appends to `CHANGELOG.md` — nothing to run by hand. Because the final PR is squash-merged, each PRD lands on the base branch as one conventional commit, which is what release-please reads.
 
 ## Recommended companions
 

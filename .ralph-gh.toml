@@ -1,10 +1,9 @@
 # .ralph-gh.toml — ralph-gh dogfooding: the conductor runs on its own repo.
 # Plain data, read with tomllib; see example.ralph-gh.toml for every key.
 
-# Verification: the conductor's unit tests, a syntax check of the installer, then plugin validation.
+# Verification: the conductor's unit tests, then plugin validation.
 verify_commands = [
   "python3 -m unittest discover -s tests -t .",
-  "bash -n install.sh",
   "claude plugin validate .",
 ]
 

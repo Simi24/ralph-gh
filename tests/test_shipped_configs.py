@@ -11,11 +11,11 @@ REPO = Path(__file__).resolve().parent.parent
 
 
 class ShippedConfigsTest(unittest.TestCase):
-    def test_repo_config_loads_and_runs_the_unit_tests_and_the_installer_check(self) -> None:
+    def test_repo_config_loads_and_runs_the_unit_tests_and_plugin_validation(self) -> None:
         config = load_config(REPO / ".ralph-gh.toml")
         self.assertEqual(
             config.verify_commands,
-            ("python3 -m unittest discover -s tests -t .", "bash -n install.sh", "claude plugin validate ."),
+            ("python3 -m unittest discover -s tests -t .", "claude plugin validate ."),
         )
 
     def test_example_config_loads_and_documents_every_key(self) -> None:
