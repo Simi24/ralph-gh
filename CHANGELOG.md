@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/Simi24/ralph-gh/compare/v2.0.0...v2.1.0) (2026-10-24)
+
+
+### Features
+
+* ✨ add pluggable engine support for Antigravity and Claude Code ([#103](https://github.com/Simi24/ralph-gh/issues/103)) ([7e76c71](https://github.com/Simi24/ralph-gh/commit/7e76c71d722552f8467936f70050769e2b3262bb))
+
 ## [2.0.0](https://github.com/Simi24/ralph-gh/compare/v1.0.0...v2.0.0) (2026-10-09)
 
 
