@@ -52,7 +52,7 @@ A review verdict tags every finding `BLOCKING` (a verified defect, an unmet acce
 
 `ralph-guard` turns the session contract into a hard limit across all engines:
 - Execution shims for `git` and `gh` (`worker-bundle/bin/`) refuse `git push`, `--no-verify`, and GitHub write operations (`pr`/`issue`/`release` create, merge, edit, comment, review, delete; `gh api` with a non-GET method or fields).
-- Environment isolation: GitHub authentication tokens (`GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GH_HOST`) are stripped, `GH_CONFIG_DIR` points to an empty directory, and git push URLs are redirected to an invalid endpoint (`remote.origin.pushurl`) with SSH/credential prompts disabled.
+- Environment isolation: GitHub authentication stays, because every session reads its ticket and PRD with `gh issue view`; the `gh` shim refuses writes. Git push URLs are redirected to an invalid endpoint (`remote.origin.pushurl`), with SSH and credential prompts disabled.
 - File protection: Claude sessions hook tool calls to block writes outside the worktree, writes into `.git`, and dependency manifest edits. For all engines, post-session inspection refuses results that edited dependency manifests unless `allow_manifest_edits = true`.
 - Every refusal says what to do instead (commit and report `RALPH:DONE`, or report `RALPH:BLOCKED`).
 

@@ -18,7 +18,7 @@ class WorkerGuardTest(unittest.TestCase):
         self.assertTrue(self.git_shim.is_file(), f"missing git shim: {self.git_shim}")
         self.assertTrue(self.gh_shim.is_file(), f"missing gh shim: {self.gh_shim}")
 
-    def test_guard_env_strips_tokens_and_configures_isolation(self) -> None:
+    def test_guard_env_keeps_gh_auth_for_reads_and_configures_isolation(self) -> None:
         base = {
             "PATH": "/usr/bin:/bin",
             "GH_TOKEN": "secret-gh-token",
@@ -32,16 +32,15 @@ class WorkerGuardTest(unittest.TestCase):
 
         self.assertEqual(env["RALPH_GUARD"], "1")
         self.assertEqual(env["RALPH_GUARD_ALLOW_MANIFESTS"], "0")
-        self.assertEqual(env["GH_CONFIG_DIR"], "/var/empty")
+        self.assertNotIn("GH_CONFIG_DIR", env)
         self.assertEqual(env["GIT_CONFIG_KEY_0"], "remote.origin.pushurl")
         self.assertEqual(env["GIT_CONFIG_VALUE_0"], "http://127.0.0.1:0/blocked")
         self.assertEqual(env["GIT_SSH_COMMAND"], "false")
 
-        # Tokens stripped
-        self.assertNotIn("GH_TOKEN", env)
-        self.assertNotIn("GITHUB_TOKEN", env)
-        self.assertNotIn("GH_ENTERPRISE_TOKEN", env)
-        self.assertNotIn("GH_HOST", env)
+        # gh auth kept: sessions read their ticket and PRD with `gh issue view`
+        self.assertEqual(env["GH_TOKEN"], "secret-gh-token")
+        self.assertEqual(env["GITHUB_TOKEN"], "secret-github-token")
+        self.assertEqual(env["GH_HOST"], "github.com")
         self.assertEqual(env["OTHER_VAR"], "keep-me")
 
         # PATH has worker-bundle/bin first

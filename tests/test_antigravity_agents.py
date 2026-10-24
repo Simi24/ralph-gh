@@ -67,7 +67,7 @@ class AntigravityAgentsTest(unittest.TestCase):
         seen = json.loads(result.text)
         self.assertEqual(seen["env"]["RALPH_GUARD"], "1")
         self.assertEqual(seen["env"]["RALPH_GUARD_ALLOW_MANIFESTS"], "0")
-        self.assertEqual(seen["env"]["GH_CONFIG_DIR"], "/var/empty")
+        self.assertNotIn("GH_CONFIG_DIR", seen["env"])
         self.assertEqual(seen["env"]["GIT_CONFIG_KEY_0"], "remote.origin.pushurl")
 
     def test_agent_flag_included(self) -> None:

@@ -58,8 +58,9 @@ def check_manifest_edits(cwd: Path) -> str | None:
 def guard_env(request: SessionRequest, allow_manifest_edits: bool, base: Mapping[str, str] | None = None) -> dict[str, str]:
     """`base` (default: this process's environment) plus the guard's switches for one session."""
     raw = os.environ if base is None else base
-    strip_keys = {"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GH_HOST"}
-    env = {k: v for k, v in raw.items() if not k.startswith("RALPH_GUARD") and k not in strip_keys}
+    # gh auth stays: every session reads its ticket and PRD with `gh issue view` (private repos too);
+    # writes are refused by the gh shim below and, for Claude, by the bundle's hooks
+    env = {k: v for k, v in raw.items() if not k.startswith("RALPH_GUARD")}
     env["RALPH_GUARD"] = "1"
     env["RALPH_GUARD_ALLOW_MANIFESTS"] = "1" if allow_manifest_edits else "0"
     if request.role in ROOTS_ROLES:
@@ -69,9 +70,6 @@ def guard_env(request: SessionRequest, allow_manifest_edits: bool, base: Mapping
     bin_dir = str(bundle_dir() / "bin")
     current_path = env.get("PATH", "")
     env["PATH"] = f"{bin_dir}:{current_path}" if current_path else bin_dir
-
-    # Point gh config to a nonexistent directory to ensure gh has no stored auth tokens
-    env["GH_CONFIG_DIR"] = "/var/empty"
 
     # Block git push at git config level as defense-in-depth even if shim is bypassed
     env["GIT_CONFIG_COUNT"] = "1"
