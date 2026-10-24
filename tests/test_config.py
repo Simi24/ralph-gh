@@ -77,6 +77,42 @@ class LoadConfigTest(unittest.TestCase):
         with self.assertRaises(ConfigError):
             self.load('verify_commands = ["x"]\nautonomy = "yolo"')
 
+    def test_engine_and_role_models_configuration(self) -> None:
+        # Defaults
+        config = self.load('verify_commands = ["x"]')
+        self.assertEqual(config.engine, "claude")
+        self.assertIsNone(config.writer_engine)
+        self.assertIsNone(config.reviewer_engine)
+        self.assertEqual(config.resolved_writer_engine, "claude")
+        self.assertEqual(config.resolved_reviewer_engine, "claude")
+        self.assertIsNone(config.resolved_writer_model)
+        self.assertIsNone(config.resolved_reviewer_model)
+
+        # Single engine set
+        config = self.load('verify_commands = ["x"]\nengine = "antigravity"\nmodel = "gemini-2.5-pro"')
+        self.assertEqual(config.resolved_writer_engine, "antigravity")
+        self.assertEqual(config.resolved_reviewer_engine, "antigravity")
+        self.assertEqual(config.resolved_writer_model, "gemini-2.5-pro")
+        self.assertEqual(config.resolved_reviewer_model, "gemini-2.5-pro")
+
+        # Split roles: antigravity for writer, claude for reviewer
+        config = self.load(
+            'verify_commands = ["x"]\n'
+            'writer_engine = "antigravity"\n'
+            'reviewer_engine = "claude"\n'
+            'writer_model = "gemini-2.5-flash"\n'
+            'reviewer_model = "claude-opus-4"\n'
+        )
+        self.assertEqual(config.resolved_writer_engine, "antigravity")
+        self.assertEqual(config.resolved_reviewer_engine, "claude")
+        self.assertEqual(config.resolved_writer_model, "gemini-2.5-flash")
+        self.assertEqual(config.resolved_reviewer_model, "claude-opus-4")
+
+        # Invalid engines are refused
+        for key in ("engine", "writer_engine", "reviewer_engine"):
+            with self.subTest(key=key), self.assertRaises(ConfigError):
+                self.load(f'verify_commands = ["x"]\n{key} = "invalid_engine"')
+
     def test_missing_file_is_refused(self) -> None:
         with self.assertRaises(ConfigError):
             load_config(Path("/nonexistent/.ralph-gh.toml"))

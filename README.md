@@ -124,7 +124,10 @@ $EDITOR .ralph-gh.toml
 - `reviewer_agent`, `ticket_gate_agent` — the agents the final review and the ticket gate run as
 - `doc_files` — docs that must stay in sync with behavior (e.g. `["README.md"]`); implementer and fix sessions get one pointer line naming them, never their content
 - `session_timeout` — seconds before a hung session is killed (default 7200)
+- `engine` — agent execution engine (`"claude"` or `"antigravity"`; default `"claude"`)
+- `writer_engine`, `reviewer_engine` — customize engine by role (e.g. `writer_engine = "antigravity"`, `reviewer_engine = "claude"`)
 - `model` — model for writing sessions (reviewers stay on their pinned model)
+- `writer_model`, `reviewer_model` — customize models by role (e.g. `writer_model = "gemini-2.5-pro"`, `reviewer_model = "claude-opus-4"`)
 - `yolo_allowlist` — regexes of files allowed to auto-merge in `yolo` mode. Entries are Python regexes matched with `re.search`, i.e. **unanchored**: `README\.md` also matches `docs/README.md`. Anchor them with `^` (and `$`), e.g. `^README\.md$`
 - `preflight_command`, `preflight_health_url`, `preflight_health_retries` — if the tests need infra (docker compose, LocalStack, ...); a failed command or a health check that never goes green aborts the run before any session is spawned. Each health probe is capped at 3s connect / 5s total
 - `wait_for_reset`, `usage_wait_seconds` — see [Usage limits](#usage-limits)

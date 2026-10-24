@@ -99,6 +99,30 @@ class PreflightTest(unittest.TestCase):
                 self.assertIn(name, self.failure(env))
                 self.assertEqual((env.shells, env.probes), ([], 0))
 
+    def test_antigravity_engine_tool_checks(self) -> None:
+        # Antigravity only requires agy, gh, git (not claude)
+        agy_config = make_config(engine="antigravity")
+        env_with_agy = FakeEnv(tools={"gh", "git", "agy"})
+        self.assertIsNone(preflight(agy_config, env_with_agy))
+
+        env_without_agy = FakeEnv(tools={"gh", "git", "claude"})
+        msg = self.failure(env_without_agy, agy_config)
+        self.assertIn("tool agy", msg)
+
+        # Dual engine requires both agy and claude
+        dual_config = make_config(writer_engine="antigravity", reviewer_engine="claude")
+        self.assertIsNone(preflight(dual_config, FakeEnv(tools={"gh", "git", "agy", "claude"})))
+        msg = self.failure(FakeEnv(tools={"gh", "git", "agy"}), dual_config)
+        self.assertIn("tool claude", msg)
+        msg = self.failure(FakeEnv(tools={"gh", "git", "claude"}), dual_config)
+        self.assertIn("tool agy", msg)
+
+    def test_antigravity_engine_skips_worker_bundle(self) -> None:
+        agy_config = make_config(engine="antigravity")
+        # Even with a bundle problem, pure antigravity passes bundle check
+        env = FakeEnv(tools={"gh", "git", "agy"}, bundle_problem="broken")
+        self.assertIsNone(preflight(agy_config, env))
+
     def test_ralph_files_untracked_do_not_dirty_the_tree(self) -> None:
         env = FakeEnv(status=["?? .ralph-gh.toml", "?? .ralph-gh.config", "?? .ralph-gh/"])
         self.assertIsNone(preflight(make_config(), env))

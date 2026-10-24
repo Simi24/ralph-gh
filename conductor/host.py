@@ -72,7 +72,24 @@ class HostEnvironment:
 
     def agent_roots(self) -> list[Path]:
         config_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
-        return [config_dir / "agents", self.repo_root / ".claude" / "agents", self.bundle / "agents"]
+        candidates = [
+            config_dir / "agents",
+            self.repo_root / ".claude" / "agents",
+            self.repo_root / ".agents" / "agents",
+            self.repo_root / ".agents",
+            self.repo_root / "agents",
+            Path.home() / ".agents" / "agents",
+            Path.home() / ".gemini" / "agents",
+            self.bundle / "agents",
+        ]
+        # Return in order, deduplicated
+        seen = set()
+        roots = []
+        for p in candidates:
+            if p not in seen:
+                seen.add(p)
+                roots.append(p)
+        return roots
 
     def worker_bundle_problem(self) -> str | None:
         if not (self.bundle / ".claude-plugin" / "plugin.json").is_file():

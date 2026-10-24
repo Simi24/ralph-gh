@@ -96,7 +96,13 @@ def _frontmatter_names(path: Path, pattern: re.Pattern[str]) -> bool:
 
 
 def _check_tools(config: Config, env: Environment) -> str | None:
-    for tool in _TOOLS:
+    tools = ["gh", "git"]
+    engines = {config.resolved_writer_engine, config.resolved_reviewer_engine}
+    if "claude" in engines:
+        tools.append("claude")
+    if "antigravity" in engines:
+        tools.append("agy")
+    for tool in tools:
         if not env.has_tool(tool):
             return f"tool {tool}: not found in PATH"
     if not env.gh_authenticated():
@@ -129,6 +135,9 @@ def _check_fetch(config: Config, env: Environment) -> str | None:
 
 
 def _check_worker_bundle(config: Config, env: Environment) -> str | None:
+    engines = {config.resolved_writer_engine, config.resolved_reviewer_engine}
+    if "claude" not in engines:
+        return None
     problem = env.worker_bundle_problem()
     if problem is not None:
         return f"worker bundle: {problem} (reinstall ralph-gh; sessions never start unguarded)"
