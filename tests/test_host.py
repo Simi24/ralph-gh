@@ -83,6 +83,8 @@ class HostEnvironmentTest(unittest.TestCase):
         roots = HostEnvironment(Path("/repo")).agent_roots()
         self.assertEqual(roots[1], Path("/repo/.claude/agents"))
         self.assertEqual(roots[0].name, "agents")
+        self.assertIn(Path("/repo/.agents/agents"), roots)
+        self.assertNotIn(Path("/repo/agents"), roots)
         self.assertEqual(roots[-1], HostEnvironment(Path("/repo")).bundle / "agents")
 
     def stub_claude(self, script: str) -> Path:

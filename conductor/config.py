@@ -11,6 +11,7 @@ _AGENT = re.compile(r"^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$")
 _REF = re.compile(r"^[A-Za-z0-9._/-]+$")
 _MODEL = re.compile(r"^[A-Za-z0-9._/:\[\]-]+$")  # model ids carry ':' and '[1m]'
 AUTONOMY_MODES = ("halt-each-pr", "respect-hitl-arch", "yolo")
+ENGINES = ("claude", "antigravity")
 _RUN_FIELDS = {"prd", "repo_root", "state_root", "autonomy"}
 
 
@@ -30,6 +31,11 @@ class Config:
     ticket_gate_agent: str = "ralph-guard:ralph-ticket-gate"
     session_timeout: int = 7200
     model: str | None = None
+    engine: str = "claude"
+    writer_engine: str | None = None
+    reviewer_engine: str | None = None
+    writer_model: str | None = None
+    reviewer_model: str | None = None
     yolo_allowlist: tuple[str, ...] = ()  # Python regexes, re.search per changed path
     doc_files: tuple[str, ...] = ()  # docs that must stay in sync with behavior (prompt pointers only)
     preflight_command: str = ""
@@ -43,6 +49,22 @@ class Config:
     repo_root: Path = Path(".")
     state_root: Path = Path(".")  # per-repo state dir: <root>/<owner>__<repo>
     autonomy: str = "respect-hitl-arch"  # CLI flag; applies to the final PR only
+
+    @property
+    def resolved_writer_engine(self) -> str:
+        return self.writer_engine or self.engine
+
+    @property
+    def resolved_reviewer_engine(self) -> str:
+        return self.reviewer_engine or self.engine
+
+    @property
+    def resolved_writer_model(self) -> str | None:
+        return self.writer_model or self.model
+
+    @property
+    def resolved_reviewer_model(self) -> str | None:
+        return self.reviewer_model or self.model
 
     def with_run(self, *, prd: int, repo_root: Path, state_root: Path, autonomy: str | None = None) -> "Config":
         config = replace(self, prd=prd, repo_root=repo_root, state_root=state_root)
@@ -110,8 +132,14 @@ def parse_config(data: dict[str, object]) -> Config:
     for key in ("reviewer_agent", "ticket_gate_agent"):
         if key in kwargs:
             _check_token(key, str(kwargs[key]), _AGENT, "agent name")
-    if "model" in kwargs:
-        _check_token("model", str(kwargs["model"]), _MODEL, "model id")
+    for key in ("engine", "writer_engine", "reviewer_engine"):
+        if key in kwargs:
+            val = kwargs[key]
+            if val not in ENGINES:
+                raise ConfigError(f"{key}: expected one of {', '.join(ENGINES)}")
+    for key in ("model", "writer_model", "reviewer_model"):
+        if key in kwargs:
+            _check_token(key, str(kwargs[key]), _MODEL, "model id")
     return Config(verify_commands=tuple(commands), yolo_allowlist=allowlist, doc_files=doc_files, **kwargs)  # type: ignore[arg-type]
 
 

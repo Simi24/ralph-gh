@@ -60,9 +60,25 @@ class UsageTest(unittest.TestCase):
 
     def test_usage_errors_exit_2(self) -> None:
         for argv in (["run"], ["run", "--prd", "x"], ["run", "--prd", "0"], ["run", "--prd", "1", "--parallel", "0"],
-                     ["run", "--prd", "1", "--autonomy", "nope"], ["bogus"], []):
+                     ["run", "--prd", "1", "--autonomy", "nope"], ["run", "--prd", "1", "--engine", "bad"], ["bogus"], []):
             with self.subTest(argv):
                 self.assertEqual(self.parse_error(*argv), 2)
+
+    def test_engine_flags_reach_config(self) -> None:
+        parser = cli.build_parser()
+        args = parser.parse_args([
+            "run", "--prd", "52",
+            "--engine", "antigravity",
+            "--writer-engine", "antigravity",
+            "--reviewer-engine", "claude",
+            "--writer-model", "gemini-flash",
+            "--reviewer-model", "opus",
+        ])
+        self.assertEqual(args.engine, "antigravity")
+        self.assertEqual(args.writer_engine, "antigravity")
+        self.assertEqual(args.reviewer_engine, "claude")
+        self.assertEqual(args.writer_model, "gemini-flash")
+        self.assertEqual(args.reviewer_model, "opus")
 
 
 class StateDirTest(unittest.TestCase):

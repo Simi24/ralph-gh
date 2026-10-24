@@ -59,10 +59,19 @@ session_timeout = 7200
 # behavior: ..."), never their content. Default: none.
 doc_files = ["README.md"]
 
-# Model for writing sessions (exploration, implementer, fix, merge-fix,
-# integration-fix, final-fix), passed as `claude --model`. Unset by default: claude's own
-# default. Reviewer sessions never get --model: their agent definition pins it.
+# Agent engine configuration. Supported engines: "claude" | "antigravity".
+# Default is "claude". You can configure a single engine for all sessions, or split
+# by role (e.g. implement with Antigravity, review with Claude Code).
+# engine = "claude"
+# writer_engine = "antigravity"
+# reviewer_engine = "claude"
+
+# Model configuration. `model` applies to writing sessions by default.
+# You can also customize `writer_model` and `reviewer_model` separately.
+# Reviewer sessions with a pinned agent definition (like Opus) respect their agent pin unless unpinned.
 # model = "claude-sonnet-5"
+# writer_model = "gemini-2.5-pro"
+# reviewer_model = "claude-opus-4"
 
 # yolo autonomy only (see README): Python regexes matched with re.search
 # (UNANCHORED: "README\.md" also matches "docs/README.md", so anchor entries
