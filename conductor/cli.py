@@ -93,7 +93,7 @@ def _build_agents(config: Config, stop: StopState) -> Agents:
     if "claude" in needed:
         engines["claude"] = ClaudeAgents(stop.sessions, allow_manifest_edits=config.allow_manifest_edits)
     if "antigravity" in needed:
-        engines["antigravity"] = AntigravityAgents(stop.sessions)
+        engines["antigravity"] = AntigravityAgents(stop.sessions, allow_manifest_edits=config.allow_manifest_edits)
 
     return CompositeAgents(
         engines=engines,

@@ -53,13 +53,13 @@ class CompositeAgentsTest(unittest.TestCase):
         router.start(self.req("implementer"))
         self.assertEqual(self.antigravity.requests[-1].model, "gemini-flash")
 
-        # Review role gets reviewer_model when no agent is specified
+        # Review role gets reviewer_model
         router.start(self.req("ticket-gate"))
         self.assertEqual(self.claude.requests[-1].model, "claude-opus")
 
-        # Review role with pinned agent does NOT get model injected
+        # Review role with agent also gets reviewer_model applied
         router.start(self.req("final-review", agent="ralph-guard:ralph-gate-reviewer"))
-        self.assertIsNone(self.claude.requests[-1].model)
+        self.assertEqual(self.claude.requests[-1].model, "claude-opus")
 
         # Explicit request model is preserved
         router.start(self.req("implementer", model="custom-model"))

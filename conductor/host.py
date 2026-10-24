@@ -76,8 +76,6 @@ class HostEnvironment:
             config_dir / "agents",
             self.repo_root / ".claude" / "agents",
             self.repo_root / ".agents" / "agents",
-            self.repo_root / ".agents",
-            self.repo_root / "agents",
             Path.home() / ".agents" / "agents",
             Path.home() / ".gemini" / "agents",
             self.bundle / "agents",

@@ -48,24 +48,32 @@ A review verdict tags every finding `BLOCKING` (a verified defect, an unmet acce
 
 ### The worker bundle and ralph-guard
 
-`worker-bundle/` is a plugin folder of its own that the main plugin does not load, so your interactive sessions never see its agents or its guard. It holds the two reviewer agents and the `ralph-guard` hooks. The conductor finds it next to its own package (never through configuration) and starts **every** worker session (exploration, implementer, fix, merge-fix, integration-fix, final-fix, ticket gate, final review) with `--plugin-dir <bundle>` and `RALPH_GUARD=1`. Only the exploration session also gets `RALPH_GUARD_ROOTS` (its notes directory) as an extra writable root.
+`worker-bundle/` is a plugin folder of its own that the main plugin does not load, so your interactive sessions never see its agents or its guard. It holds the two reviewer agents and the `ralph-guard` hooks and execution shims (`worker-bundle/bin/`). The conductor finds it next to its own package (never through configuration) and starts **every** worker session (exploration, implementer, fix, merge-fix, integration-fix, final-fix, ticket gate, final review) with `RALPH_GUARD=1` and its protected environment. Claude Code sessions also load `--plugin-dir <bundle>`.
 
-`ralph-guard` turns the session contract into a hard limit. It refuses `git push`, `--no-verify`, GitHub writes (PR/issue/label/release/... create, merge, edit, comment, review, delete; `gh api` with a non-GET method or fields), writes outside the session's cwd plus the extra roots (symlinks and `..` resolved), writes into `.git`, and edits of dependency manifests unless `allow_manifest_edits = true`. Read-only `gh` calls and in-worktree writes pass. Every refusal says what to do instead (commit and report `RALPH:DONE`, or report `RALPH:BLOCKED`). The guard is inert without `RALPH_GUARD=1` and a guard that fails refuses the call. The guard is **defense in depth**, not a sandbox: shell parsing is best effort, so the conductor's own checks (verify, gates, head-pinned merges) stay the authority.
+`ralph-guard` turns the session contract into a hard limit across all engines:
+- Execution shims for `git` and `gh` (`worker-bundle/bin/`) refuse `git push`, `--no-verify`, and GitHub write operations (`pr`/`issue`/`release` create, merge, edit, comment, review, delete; `gh api` with a non-GET method or fields).
+- Environment isolation: GitHub authentication tokens (`GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GH_HOST`) are stripped, `GH_CONFIG_DIR` points to an empty directory, and git push URLs are redirected to an invalid endpoint (`remote.origin.pushurl`) with SSH/credential prompts disabled.
+- File protection: Claude sessions hook tool calls to block writes outside the worktree, writes into `.git`, and dependency manifest edits. For all engines, post-session inspection refuses results that edited dependency manifests unless `allow_manifest_edits = true`.
+- Every refusal says what to do instead (commit and report `RALPH:DONE`, or report `RALPH:BLOCKED`).
+
+Read-only `gh` calls and in-worktree writes pass. The guard is inert without `RALPH_GUARD=1` and fails closed. The guard is **defense in depth**, not a sandbox: shell parsing is best effort, so the conductor's own checks (verify, gates, head-pinned merges) stay the authority.
 
 Preflight fails (naming `worker bundle`) when the bundle is missing or the installed Claude Code cannot load it (`claude plugin validate`), so a run never starts unguarded. The mods API is early access.
 
 ### Minimum Claude Code version
 
-The plugin needs a Claude Code that has `claude plugin validate` and `claude plugin test` and loads hooks modules and `--plugin-dir`: **2.1.295** is the version it was built and verified on, so treat it as the minimum. Check yours with `claude --version`; preflight refuses to start a run when the worker bundle cannot be loaded.
+The plugin needs a Claude Code that has `claude plugin validate` and `claude plugin test` and loads hooks modules and `--plugin-dir`: **2.1.295** is the version it was built and verified on, so treat it as the minimum. Check yours with `claude --version`; preflight refuses to start a run when the worker bundle cannot be loaded (when Claude is an active engine).
 
 ### The two reviewer agents
 
-They live in the worker bundle (see above), so they work in every repo and stay out of your interactive sessions. Both pin their model in their frontmatter — the model is decided by the definition, not the caller — so reviewer sessions never get `--model`. Writing sessions (exploration, implementer, fix, merge-fix, final-fix) run on the `model` you set in `.ralph-gh.toml`, or on Claude Code's default.
+They live in the worker bundle (see above), so they work in every repo and stay out of your interactive sessions. Both pin their model in their frontmatter (Sonnet for ticket-gate, Opus for gate-reviewer), but `reviewer_model` in `.ralph-gh.toml` or `--reviewer-model` on CLI can override the model for review sessions. Writing sessions run on `writer_model`, `model`, or the engine's default.
 
 - **`ralph-ticket-gate`** (Sonnet) — the light per-ticket gate: acceptance criteria and spec only, no standards or design review.
 - **`ralph-gate-reviewer`** (Opus) — the final review of the PRD: adversarial correctness pass, acceptance-criteria coverage, repo-standards compliance, structured `PASS`/`FAIL` verdict. If you have a code-review skill installed it drives the review with it; otherwise it falls back to its built-in two-axis process. Review depth scales with what the diff touches (docs-only gets a lighter pass than core code), but the two-axis review and the AC coverage table are a floor at every tier. On a re-review it runs scoped to the fix diff.
 
-A repo can use its own reviewers: set `reviewer_agent` / `ticket_gate_agent` in `.ralph-gh.toml` (the defaults are the bundle's `ralph-guard:ralph-gate-reviewer` and `ralph-guard:ralph-ticket-gate`; for any other name the run stops at startup if no agent with that frontmatter `name:` exists in the user or repo agents directory). A repo can also declare its own critical paths in `AGENTS.md` (code whose failure corrupts state, authorizes actions, or handles untrusted input) to force the reviewer's deepest tier on any diff that touches them.
+A repo can use its own reviewers: set `reviewer_agent` / `ticket_gate_agent` in `.ralph-gh.toml`.
+
+> **Note on engine-specific skills in target repos**: When running with Antigravity as writer (`writer_engine = "antigravity"`), note that `agy` does not automatically load Claude Code-specific plugin skills (`.claude/skills/`). If a target repository's `AGENTS.md` directs agents to invoke `.claude/skills/`, ensure equivalent instructions are documented directly in `AGENTS.md` or mapped to Antigravity's skills directory to prevent review rejections due to missed conventions.
 
 ## Install as a Claude Code plugin
 

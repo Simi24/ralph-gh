@@ -29,10 +29,23 @@ _RESET_MAX = 200
 
 def _payload(stdout: str) -> dict[str, Any]:
     """The result object of the CLI's JSON output ({} when there is none)."""
-    try:
-        data = json.loads(stdout)
-    except (json.JSONDecodeError, ValueError):
+    text = stdout.strip()
+    if not text:
         return {}
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        data = {}
+        for line in reversed(text.splitlines()):
+            line = line.strip()
+            if line.startswith("{") and line.endswith("}"):
+                try:
+                    data = json.loads(line)
+                    break
+                except (json.JSONDecodeError, ValueError):
+                    pass
+        else:
+            return {}
     if isinstance(data, list):
         data = next((e for e in reversed(data) if isinstance(e, dict) and (e.get("status") or e.get("response"))), {})
     return data if isinstance(data, dict) else {}

@@ -1,7 +1,8 @@
-"""AntigravityAgents against a stub `agy` (a Python script): flags, arguments, timeout kill, thread safety."""
+"""AntigravityAgents against a stub `agy` (a Python script): flags, stdin prompt, timeout kill, thread safety, guard env."""
 import json
 import os
 import signal
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -11,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from conductor.antigravity_agents import AntigravityAgents, build_command
+from conductor.markers import OutcomeKind
 from conductor.ports import SessionRequest
 from conductor.sessions import SessionRegistry, Stopped
 
@@ -18,10 +20,7 @@ STUB = textwrap.dedent(
     """
     import json, os, signal, subprocess, sys, time
     argv = sys.argv[1:]
-    prompt = ""
-    for arg in argv:
-        if arg.startswith("--print="):
-            prompt = arg.removeprefix("--print=")
+    prompt = sys.stdin.read()
     if prompt.startswith("SLEEP"):
         child = subprocess.Popen(["sleep", "60"])
         open(sys.argv[0] + ".child", "w").write(str(child.pid))
@@ -29,7 +28,8 @@ STUB = textwrap.dedent(
     if prompt.startswith("LIMIT"):
         print(json.dumps({"status": "ERROR", "error": "Quota exceeded. Resets at 9am"}))
         sys.exit(1)
-    print(json.dumps({"status": "SUCCESS", "response": json.dumps({"argv": argv, "prompt": prompt})}))
+    env = {k: v for k, v in os.environ.items() if k.startswith("RALPH_GUARD") or k.startswith("GH_") or k.startswith("GIT_CONFIG_")}
+    print(json.dumps({"status": "SUCCESS", "response": json.dumps({"argv": argv, "prompt": prompt, "env": env})}))
     """
 )
 
@@ -47,17 +47,28 @@ class AntigravityAgentsTest(unittest.TestCase):
     def request(self, prompt: str = "hello", **extra: object) -> SessionRequest:
         return SessionRequest(role="implementer", prompt=prompt, cwd=self.dir, **extra)  # type: ignore[arg-type]
 
-    def test_prompt_arg_and_flags(self) -> None:
+    def test_prompt_sent_on_stdin_and_flags(self) -> None:
         result = self.agents.start(self.request("do it", model="gemini-2.5-pro", add_dirs=(self.dir / "a", self.dir / "b")))
         seen = json.loads(result.text)
         self.assertEqual(seen["prompt"], "do it")
         self.assertEqual(
             seen["argv"],
-            ["--dangerously-skip-permissions", "--output-format", "json",
+            ["--dangerously-skip-permissions", "--input-format", "text", "--output-format", "json",
              "--add-dir", str(self.dir / "a"), "--add-dir", str(self.dir / "b"),
-             "--model", "gemini-2.5-pro", "--print=do it"],
+             "--model", "gemini-2.5-pro"],
         )
+        # Not on argv
+        self.assertNotIn("--print=do it", seen["argv"])
+        self.assertNotIn("-p", seen["argv"])
         self.assertEqual((result.returncode, result.timed_out, result.usage_limit), (0, False, False))
+
+    def test_guard_env_is_applied(self) -> None:
+        result = self.agents.start(self.request("test"))
+        seen = json.loads(result.text)
+        self.assertEqual(seen["env"]["RALPH_GUARD"], "1")
+        self.assertEqual(seen["env"]["RALPH_GUARD_ALLOW_MANIFESTS"], "0")
+        self.assertEqual(seen["env"]["GH_CONFIG_DIR"], "/var/empty")
+        self.assertEqual(seen["env"]["GIT_CONFIG_KEY_0"], "remote.origin.pushurl")
 
     def test_agent_flag_included(self) -> None:
         command = build_command(("agy",), self.request(agent="my-agent"))

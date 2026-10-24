@@ -36,7 +36,7 @@ class CompositeAgents:
             raise ValueError(f"unknown engine '{engine_name}' for role '{request.role}' (available: {available})")
 
         model = self._reviewer_model if is_review else self._writer_model
-        if model and request.model is None and not request.agent:
+        if model and request.model is None:
             request = replace(request, model=model)
 
         return adapter.start(request)
