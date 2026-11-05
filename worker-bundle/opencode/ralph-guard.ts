@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs'
+import { realpathSync, writeFileSync } from 'node:fs'
 
 import { absolute, checkBash, checkWrite, opencodeWrites } from '../hooks/rules'
 
@@ -9,6 +9,10 @@ import { absolute, checkBash, checkWrite, opencodeWrites } from '../hooks/rules'
  * of the way. A refusal throws, so OpenCode reports the reason to the model instead of running
  * the tool. Extra writable roots come from RALPH_GUARD_ROOTS, manifests are allowed with
  * RALPH_GUARD_ALLOW_MANIFESTS=1. Every guard fails closed.
+ *
+ * OpenCode skips a plugin that fails to load and runs the session anyway, so on load the plugin
+ * writes the conductor's nonce (RALPH_GUARD_OPENCODE_NONCE) to RALPH_GUARD_OPENCODE_READY: a
+ * session without it is discarded by the conductor.
  */
 
 const FAILED = 'the guard itself failed, so the call is refused (fail closed)'
@@ -48,8 +52,14 @@ function check(tool: string, args: Record<string, unknown>, cwd: string): string
 type Call = { tool: string }
 type Args = { args?: Record<string, unknown> }
 
-export const RalphGuard = async ({ directory }: { directory: string }) => ({
-  'tool.execute.before': async (input: Call, output: Args): Promise<void> => {
+export const RalphGuard = async ({ directory }: { directory: string }) => {
+  const ready = process.env.RALPH_GUARD_OPENCODE_READY
+  if (process.env.RALPH_GUARD === '1' && ready) writeFileSync(ready, process.env.RALPH_GUARD_OPENCODE_NONCE ?? '')
+  return { 'tool.execute.before': before(directory) }
+}
+
+function before(directory: string) {
+  return async (input: Call, output: Args): Promise<void> => {
     if (process.env.RALPH_GUARD !== '1') return
     let reason: string | undefined
     try {
@@ -58,5 +68,5 @@ export const RalphGuard = async ({ directory }: { directory: string }) => ({
       reason = FAILED
     }
     if (reason) throw new Error(`ralph-guard: ${reason}`)
-  },
-})
+  }
+}

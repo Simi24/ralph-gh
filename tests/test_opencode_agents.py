@@ -20,6 +20,11 @@ STUB = textwrap.dedent(
     import json, os, subprocess, sys, time
     argv = sys.argv[1:]
     prompt = sys.stdin.read()
+    # the guard plugin reports loading at startup, before any model call
+    if not prompt.startswith("NOPLUGIN") and os.environ.get("RALPH_GUARD") == "1":
+        ready = os.environ.get("RALPH_GUARD_OPENCODE_READY")
+        if ready:
+            open(ready, "w").write(os.environ.get("RALPH_GUARD_OPENCODE_NONCE", ""))
     if prompt.startswith("SLEEP"):
         child = subprocess.Popen(["sleep", "60"])
         open(sys.argv[0] + ".child", "w").write(str(child.pid))
@@ -27,9 +32,11 @@ STUB = textwrap.dedent(
     if prompt.startswith("LIMIT"):
         print(json.dumps({"type": "error", "error": {"name": "APIError", "data": {"message": "Rate limit exceeded", "statusCode": 429}}}))
         sys.exit(1)
+    if prompt.startswith("FALLBACK"):
+        print('agent "x" not found. Falling back to default agent', file=sys.stderr)
     if prompt.startswith("MANIFEST"):
         open("package.json", "w").write("{}")
-    keys = ("RALPH_GUARD", "GIT_CONFIG_", "OPENCODE_CONFIG_CONTENT")
+    keys = ("RALPH_GUARD", "GIT_CONFIG_", "OPENCODE_")
     env = {k: v for k, v in os.environ.items() if k.startswith(keys)}
     seen = json.dumps({"argv": argv, "prompt": prompt, "env": env, "path": os.environ.get("PATH", ""), "pwd": os.environ.get("PWD", "")})
     print(json.dumps({"type": "text", "part": {"type": "text", "messageID": "m1", "text": seen}}))
@@ -103,13 +110,14 @@ class OpencodeAgentsTest(unittest.TestCase):
         seen = self.seen(self.agents.start(SessionRequest(role="exploration", prompt="x", cwd=self.dir, add_dirs=(notes,))))
         self.assertEqual(seen["env"]["RALPH_GUARD_ROOTS"], str(notes))
 
-    def test_a_bundle_agent_becomes_a_read_only_opencode_agent(self) -> None:
+    def test_a_bundle_agent_becomes_an_opencode_agent_that_cannot_edit(self) -> None:
         result = self.agents.start(SessionRequest(role="ticket-gate", prompt="review", cwd=self.dir, agent="ralph-guard:ralph-ticket-gate"))
         self.assertEqual(self.seen(result)["argv"], ["run", "--format", "json", "--dir", str(self.dir), "--agent", "ralph-ticket-gate"])
         agent = self.config(result)["agent"]["ralph-ticket-gate"]
         self.assertEqual(agent["mode"], "primary")
         self.assertEqual(agent["prompt"], "You are the light gate.\nEnd with GATE:PASS or GATE:FAIL.\n")
-        self.assertEqual(agent["permission"], {"edit": "deny"})
+        self.assertIs(agent["disable"], False)
+        self.assertEqual(agent["permission"], {"edit": "deny", "task": "deny"})
 
     def test_an_agent_outside_the_bundle_never_starts_a_session(self) -> None:
         for name in ("my-reviewer", "other-plugin:reviewer", "ralph-guard:missing"):
@@ -118,6 +126,37 @@ class OpencodeAgentsTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 1)
                 self.assertIn("opencode engine", result.text)
                 self.assertNotIn("GATE:PASS", result.text)
+
+    def test_a_session_whose_guard_plugin_did_not_load_is_discarded(self) -> None:
+        # OpenCode skips a plugin that fails to load and carries on, exit 0
+        result = self.agents.start(self.request("NOPLUGIN\nRALPH:DONE"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("did not load", result.text)
+        self.assertEqual(outcome_of(result).kind, OutcomeKind.UNPARSABLE)
+
+    def test_a_review_that_fell_back_to_another_agent_is_discarded(self) -> None:
+        result = self.agents.start(SessionRequest(role="ticket-gate", prompt="FALLBACK", cwd=self.dir, agent="ralph-guard:ralph-ticket-gate"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("fell back", result.text)
+
+    def test_inherited_opencode_switches_are_dropped_and_project_config_is_off(self) -> None:
+        os.environ["OPENCODE_PURE"] = "1"
+        os.environ["OPENCODE_PERMISSION"] = '{"edit": "allow"}'
+        self.addCleanup(os.environ.pop, "OPENCODE_PURE", None)
+        self.addCleanup(os.environ.pop, "OPENCODE_PERMISSION", None)
+        env = self.seen(self.agents.start(self.request()))["env"]
+        self.assertNotIn("OPENCODE_PURE", env)
+        self.assertNotIn("OPENCODE_PERMISSION", env)
+        self.assertEqual(env["OPENCODE_DISABLE_PROJECT_CONFIG"], "1")
+        self.assertEqual(env["OPENCODE_DISABLE_AUTOUPDATE"], "1")
+
+    def test_the_repo_rules_are_loaded_explicitly(self) -> None:
+        # with project config off, OpenCode no longer reads AGENTS.md by itself
+        self.assertNotIn("instructions", self.config(self.agents.start(self.request())))
+        (self.dir / "CLAUDE.md").write_text("claude rules")
+        self.assertEqual(self.config(self.agents.start(self.request()))["instructions"], [str(self.dir / "CLAUDE.md")])
+        (self.dir / "AGENTS.md").write_text("rules")
+        self.assertEqual(self.config(self.agents.start(self.request()))["instructions"], [str(self.dir / "AGENTS.md")])
 
     def test_a_missing_guard_plugin_never_starts_a_session(self) -> None:
         (self.bundle / "opencode" / "ralph-guard.ts").unlink()

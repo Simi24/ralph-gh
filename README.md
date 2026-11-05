@@ -77,10 +77,11 @@ A repo can use its own reviewers: set `reviewer_agent` / `ticket_gate_agent` in 
 
 `engine`, `writer_engine` or `reviewer_engine = "opencode"` runs sessions with `opencode run --format json` (any model OpenCode can reach, e.g. an OpenCode Go subscription: `writer_model = "opencode-go/deepseek-v4.1-flash"`). Every session:
 - runs in its worktree through `--dir` and `PWD` (OpenCode ignores the process cwd);
-- loads the OpenCode `ralph-guard` plugin and runs with sharing and auto-update off (`OPENCODE_CONFIG_CONTENT`); without the plugin file the session never starts;
-- as a reviewer, runs one of the worker bundle's agents (`ralph-guard:<name>`) defined on the fly as an OpenCode agent with edits denied. Other review agents are refused at preflight.
+- loads the OpenCode `ralph-guard` plugin and runs with sharing and auto-update off (`OPENCODE_CONFIG_CONTENT`); without the plugin file the session never starts, and a session whose plugin did not report loading (OpenCode skips a broken plugin silently) is discarded;
+- drops every inherited `OPENCODE_*` variable and runs with **project config off** (`OPENCODE_DISABLE_PROJECT_CONFIG`): a repo's `opencode.json` and `.opencode/` (plugins, agents, permissions) are ignored, since a worker could write them. The repo's `AGENTS.md` (else `CLAUDE.md`) is loaded explicitly;
+- as a reviewer, runs one of the worker bundle's agents (`ralph-guard:<name>`) defined on the fly as an OpenCode agent with edits and subagents denied; a review that fell back to another agent is discarded. Other review agents are refused at preflight, and so is an OpenCode reviewer without `reviewer_model` (or `model`): the agents' pinned Claude model means nothing to OpenCode.
 
-The plugin is tested with `bun test worker-bundle/opencode` (Bun is what OpenCode runs on). Usage-limit detection reads OpenCode `error` events (rate limit, quota, HTTP 429): the exact wording of a provider's limit message is matched loosely, so check the first real limit in `run.log`.
+The plugin is tested with `bun test worker-bundle/opencode` (Bun is what OpenCode runs on). Usage-limit detection reads OpenCode `error` events (rate limit, quota, HTTP 429), matched loosely, so check the first real limit in `run.log`. OpenCode itself retries limit errors and waits out a provider's `retry-after` silently: a long reset can surface as a session timeout instead of a usage limit.
 
 > **Note on engine-specific skills in target repos**: When running with Antigravity or OpenCode as writer (`writer_engine = "antigravity"` or `"opencode"`), note that `agy` and `opencode` do not automatically load Claude Code-specific plugin skills (`.claude/skills/`). If a target repository's `AGENTS.md` directs agents to invoke `.claude/skills/`, ensure equivalent instructions are documented directly in `AGENTS.md` or mapped to Antigravity's skills directory to prevent review rejections due to missed conventions.
 

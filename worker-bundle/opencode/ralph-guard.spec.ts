@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 
 import { expect, test } from 'bun:test'
@@ -11,6 +11,7 @@ symlinkSync('/etc', `${worktree}/escape`)
 
 async function call(tool: string, args: Record<string, unknown>, env: Record<string, string> = { RALPH_GUARD: '1' }) {
   const saved = { ...process.env }
+  delete process.env.RALPH_GUARD
   delete process.env.RALPH_GUARD_ROOTS
   delete process.env.RALPH_GUARD_ALLOW_MANIFESTS
   Object.assign(process.env, env)
@@ -69,4 +70,29 @@ test('fails closed on a file tool that names no file', async () => {
 test('tools that write nothing pass', async () => {
   expect(await call('read', { filePath: '/etc/hosts' })).toBeUndefined()
   expect(await call('grep', { pattern: 'x' })).toBeUndefined()
+})
+
+test('says it loaded, only when guarding', async () => {
+  const ready = `${worktree}-ready`
+  const saved = { ...process.env }
+  try {
+    process.env.RALPH_GUARD_OPENCODE_READY = ready
+    process.env.RALPH_GUARD_OPENCODE_NONCE = 'n0nce'
+    delete process.env.RALPH_GUARD
+    await RalphGuard({ directory: worktree })
+    expect(existsSync(ready)).toBe(false)
+    process.env.RALPH_GUARD = '1'
+    await RalphGuard({ directory: worktree })
+    expect(readFileSync(ready, 'utf8')).toBe('n0nce')
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]
+    Object.assign(process.env, saved)
+  }
+})
+
+test('a patch path with control characters is refused', async () => {
+  const patch = (path: string) => ['*** Begin Patch', `*** Add File: ${path}`, '+x', '*** End Patch'].join('\n')
+  for (const path of [`${worktree}\r/../../outside/x`, `src/x\u2028/../../../y`, 'x\r/../.git/hooks/pre-commit', 'x\r/../package.json']) {
+    expect(await call('apply_patch', { patchText: patch(path) })).toMatch(/^ralph-guard: /)
+  }
 })

@@ -131,7 +131,7 @@ class PreflightTest(unittest.TestCase):
         config = make_config(writer_engine="opencode", reviewer_engine="claude")
         self.assertIsNone(preflight(config, FakeEnv(tools={"gh", "git", "opencode", "claude"})))
         self.assertIn("tool opencode", self.failure(FakeEnv(tools={"gh", "git", "claude"}), config))
-        pure = make_config(engine="opencode", **BUNDLE_AGENTS)
+        pure = make_config(engine="opencode", model="opencode-go/glm", **BUNDLE_AGENTS)
         env = FakeEnv(tools={"gh", "git", "opencode"}, bundle_problem="broken", agent_dirs=[BUNDLE_AGENTS_DIR])
         self.assertIsNone(preflight(pure, env))
 
@@ -139,8 +139,10 @@ class PreflightTest(unittest.TestCase):
         tools = {"gh", "git", "opencode"}
         for key in ("reviewer_agent", "ticket_gate_agent"):
             with self.subTest(key):
-                config = make_config(engine="opencode", **{**BUNDLE_AGENTS, key: "other-plugin:reviewer"})
+                config = make_config(engine="opencode", model="opencode-go/glm", **{**BUNDLE_AGENTS, key: "other-plugin:reviewer"})
                 self.assertIn("opencode", self.failure(FakeEnv(tools=tools, agent_dirs=[BUNDLE_AGENTS_DIR]), config))
+        no_model = make_config(engine="opencode", **BUNDLE_AGENTS)
+        self.assertIn("reviewer_model", self.failure(FakeEnv(tools=tools, agent_dirs=[BUNDLE_AGENTS_DIR]), no_model))
         writer_only = make_config(writer_engine="opencode", reviewer_engine="claude", reviewer_agent="other-plugin:reviewer")
         self.assertIsNone(preflight(writer_only, FakeEnv(tools=tools | {"claude"})))
 

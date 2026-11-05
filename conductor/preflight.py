@@ -170,6 +170,8 @@ def _check_opencode_reviewers(config: Config, env: Environment) -> str | None:
     for label, name in (("reviewer agent", config.reviewer_agent), ("ticket gate agent", config.ticket_gate_agent)):
         if name.rpartition(":")[0] != BUNDLE_NAME:
             return f"{label}: the opencode engine only runs the worker bundle's agents ({BUNDLE_NAME}:<name>), not '{name}'"
+    if not config.resolved_reviewer_model:  # the agents' pinned Claude model means nothing to OpenCode
+        return "reviewer_model: the opencode engine needs reviewer_model (or model) for its reviews, as provider/model"
     return None
 
 

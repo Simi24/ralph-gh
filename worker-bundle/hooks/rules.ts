@@ -43,6 +43,8 @@ const MANIFESTS = new Set([
   'composer.json', 'composer.lock',
 ])
 const REQUIREMENTS = /^requirements(?:[-.][\w.-]*)?\.txt$/
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u001f\u007f\u2028\u2029]/
 
 function isInside(path: string, root: string): boolean {
   const base = root.endsWith('/') ? root.slice(0, -1) : root
@@ -51,6 +53,9 @@ function isInside(path: string, root: string): boolean {
 
 /** `path` is the resolved real path of the file to write; `roots` the resolved writable roots. */
 export function checkWrite(path: string, roots: readonly string[], allowManifests: boolean): string | undefined {
+  if (CONTROL.test(path)) {
+    return 'file paths with control characters are not allowed; use a plain path inside your worktree, or report RALPH:BLOCKED'
+  }
   if (!roots.some(root => isInside(path, root))) {
     return `writes outside the worktree are not allowed: ${path}; write inside your worktree, or report RALPH:BLOCKED if the ticket needs it`
   }
@@ -77,7 +82,7 @@ export function absolute(path: string, cwd: string): string {
 
 const OPENCODE_FILE_TOOLS = new Set(['write', 'edit', 'multiedit'])
 const OPENCODE_PATCH_TOOLS = new Set(['apply_patch', 'patch'])
-const PATCH_TARGET = /^\s*\*\*\* (?:Add File|Update File|Delete File|Move to):(.*)$/gm
+const PATCH_HEADERS = ['*** Add File:', '*** Update File:', '*** Delete File:', '*** Move to:']
 
 /**
  * The files an OpenCode tool call writes, as the call names them: undefined for a tool that
@@ -91,7 +96,16 @@ export function opencodeWrites(tool: string, args: Record<string, unknown>): str
   if (OPENCODE_PATCH_TOOLS.has(tool)) {
     const patch = args.patchText
     if (typeof patch !== 'string') return []
-    return [...patch.matchAll(PATCH_TARGET)].map(m => (m[1] ?? '').trim()).filter(Boolean)
+    // the way OpenCode reads a patch: lines split on \n only, a header's path trimmed; anything
+    // else inside the path (a \r, a \u2028) stays in it and is refused by checkWrite
+    const paths: string[] = []
+    for (const line of patch.split('\n')) {
+      const header = line.trimStart()
+      const prefix = PATCH_HEADERS.find(p => header.startsWith(p))
+      const path = prefix === undefined ? '' : header.slice(prefix.length).trim()
+      if (path) paths.push(path)
+    }
+    return paths
   }
   return undefined
 }

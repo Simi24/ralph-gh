@@ -104,6 +104,19 @@ test('opencode file tools name the files they write', () => {
   expect(opencodeWrites('bash', { command: 'ls' })).toBeUndefined()
 })
 
+test('file paths with control characters are refused', () => {
+  for (const path of ['/w/a\rb', '/w/a\nb', '/w/a\u2028b', '/w/a\u0000b']) {
+    expect(checkWrite(path, ['/w'], false)).toMatch(/control characters/)
+  }
+})
+
+test('opencode patch paths are read the way OpenCode reads them: line by line, trimmed', () => {
+  const patch = ['*** Begin Patch', '*** Add File: wt\r/../../out', '+x', '*** End Patch'].join('\n')
+  expect(opencodeWrites('apply_patch', { patchText: patch })).toEqual(['wt\r/../../out'])
+  const crlf = ['*** Begin Patch', '*** Add File: a.py ', '+x', '*** End Patch'].join('\r\n')
+  expect(opencodeWrites('apply_patch', { patchText: crlf })).toEqual(['a.py'])
+})
+
 test('opencode patches name every file they add, update, delete or move to', () => {
   const patch = [
     '*** Begin Patch',
