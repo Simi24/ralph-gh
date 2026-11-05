@@ -19,6 +19,7 @@ from conductor.host import HostEnvironment
 from conductor.legacy_config import load_repo_config
 from conductor.legacy_install import legacy_install_notice
 from conductor.observer import Observer
+from conductor.opencode_agents import OpencodeAgents
 from conductor.ports import Agents
 from conductor.repo_context import RepoContext, RepoError, find_repo
 from conductor.result import EXIT_STARTUP_ERROR
@@ -94,6 +95,8 @@ def _build_agents(config: Config, stop: StopState) -> Agents:
         engines["claude"] = ClaudeAgents(stop.sessions, allow_manifest_edits=config.allow_manifest_edits)
     if "antigravity" in needed:
         engines["antigravity"] = AntigravityAgents(stop.sessions, allow_manifest_edits=config.allow_manifest_edits)
+    if "opencode" in needed:
+        engines["opencode"] = OpencodeAgents(stop.sessions, allow_manifest_edits=config.allow_manifest_edits)
 
     return CompositeAgents(
         engines=engines,

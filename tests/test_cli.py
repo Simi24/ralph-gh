@@ -80,6 +80,10 @@ class UsageTest(unittest.TestCase):
         self.assertEqual(args.writer_model, "gemini-flash")
         self.assertEqual(args.reviewer_model, "opus")
 
+    def test_opencode_is_an_engine_choice(self) -> None:
+        args = cli.build_parser().parse_args(["run", "--prd", "52", "--writer-engine", "opencode", "--reviewer-engine", "opencode"])
+        self.assertEqual((args.writer_engine, args.reviewer_engine), ("opencode", "opencode"))
+
 
 class StateDirTest(unittest.TestCase):
     def test_default_is_under_the_claude_dir(self) -> None:

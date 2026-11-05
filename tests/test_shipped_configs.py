@@ -22,6 +22,7 @@ class ShippedConfigsTest(unittest.TestCase):
                 "claude plugin test .",
                 "claude plugin validate worker-bundle",
                 "claude plugin test worker-bundle",
+                "bun test worker-bundle/opencode",
             ),
         )
 

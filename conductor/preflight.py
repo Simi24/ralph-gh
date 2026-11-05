@@ -102,6 +102,8 @@ def _check_tools(config: Config, env: Environment) -> str | None:
         tools.append("claude")
     if "antigravity" in engines:
         tools.append("agy")
+    if "opencode" in engines:
+        tools.append("opencode")
     for tool in tools:
         if not env.has_tool(tool):
             return f"tool {tool}: not found in PATH"
@@ -161,6 +163,18 @@ def _check_ticket_gate_agent(config: Config, env: Environment) -> str | None:
     return _check_agent("ticket gate agent", config.ticket_gate_agent, env)
 
 
+def _check_opencode_reviewers(config: Config, env: Environment) -> str | None:
+    """OpenCode runs only the worker bundle's agents: any other review agent would start unreviewed."""
+    if config.resolved_reviewer_engine != "opencode":
+        return None
+    for label, name in (("reviewer agent", config.reviewer_agent), ("ticket gate agent", config.ticket_gate_agent)):
+        if name.rpartition(":")[0] != BUNDLE_NAME:
+            return f"{label}: the opencode engine only runs the worker bundle's agents ({BUNDLE_NAME}:<name>), not '{name}'"
+    if not config.resolved_reviewer_model:  # the agents' pinned Claude model means nothing to OpenCode
+        return "reviewer_model: the opencode engine needs reviewer_model (or model) for its reviews, as provider/model"
+    return None
+
+
 def _check_labels(config: Config, env: Environment) -> str | None:
     existing = env.existing_labels()
     if existing is None:
@@ -205,6 +219,7 @@ _CHECKS: tuple[Callable[[Config, Environment], str | None], ...] = (
     _check_worker_bundle,
     _check_reviewer_agent,
     _check_ticket_gate_agent,
+    _check_opencode_reviewers,
     _check_labels,
     _check_preflight_command,
     _check_health,

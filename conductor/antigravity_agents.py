@@ -9,10 +9,10 @@
 import logging
 import signal
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 from conductor.antigravity_output import parse_session
-from conductor.markers import OutcomeKind
 from conductor.ports import SessionRequest, SessionResult
 from conductor.sessions import SessionRegistry, kill_group
 from conductor.worker_bundle import check_manifest_edits, guard_env
@@ -78,11 +78,8 @@ class AntigravityAgents:
                 manifest = check_manifest_edits(request.cwd)
                 if manifest:
                     log.warning(f"[guard] antigravity session '{request.role}' edited manifest: {manifest}")
-                    return SessionResult(
-                        text=f"ralph-guard: dependency manifests are not edited by sessions ({manifest}); report RALPH:BLOCKED if the ticket needs it\nRALPH:BLOCKED",
-                        outcome=OutcomeKind.BLOCKED,
-                        cost=result.cost,
-                    )
+                    text = f"ralph-guard: dependency manifests are not edited by sessions ({manifest}); report RALPH:BLOCKED if the ticket needs it\nRALPH:BLOCKED"
+                    return replace(result, text=text)
             return result
         finally:
             self._sessions.release(proc)

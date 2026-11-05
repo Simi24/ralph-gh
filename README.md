@@ -53,7 +53,7 @@ A review verdict tags every finding `BLOCKING` (a verified defect, an unmet acce
 `ralph-guard` turns the session contract into a hard limit across all engines:
 - Execution shims for `git` and `gh` (`worker-bundle/bin/`) refuse `git push`, `--no-verify`, and GitHub write operations (`pr`/`issue`/`release` create, merge, edit, comment, review, delete; `gh api` with a non-GET method or fields).
 - Environment isolation: GitHub authentication stays, because every session reads its ticket and PRD with `gh issue view`; the `gh` shim refuses writes. Git push URLs are redirected to an invalid endpoint (`remote.origin.pushurl`), with SSH and credential prompts disabled.
-- File protection: Claude sessions hook tool calls to block writes outside the worktree, writes into `.git`, and dependency manifest edits. For all engines, post-session inspection refuses results that edited dependency manifests unless `allow_manifest_edits = true`.
+- File protection: Claude sessions hook tool calls to block writes outside the worktree, writes into `.git`, and dependency manifest edits; OpenCode sessions get the same rules through an OpenCode plugin (`worker-bundle/opencode/ralph-guard.ts`, loaded with `OPENCODE_CONFIG_CONTENT`). For all engines, post-session inspection refuses results that edited dependency manifests unless `allow_manifest_edits = true`.
 - Every refusal says what to do instead (commit and report `RALPH:DONE`, or report `RALPH:BLOCKED`).
 
 Read-only `gh` calls and in-worktree writes pass. The guard is inert without `RALPH_GUARD=1` and fails closed. The guard is **defense in depth**, not a sandbox: shell parsing is best effort, so the conductor's own checks (verify, gates, head-pinned merges) stay the authority.
@@ -73,7 +73,17 @@ They live in the worker bundle (see above), so they work in every repo and stay 
 
 A repo can use its own reviewers: set `reviewer_agent` / `ticket_gate_agent` in `.ralph-gh.toml`.
 
-> **Note on engine-specific skills in target repos**: When running with Antigravity as writer (`writer_engine = "antigravity"`), note that `agy` does not automatically load Claude Code-specific plugin skills (`.claude/skills/`). If a target repository's `AGENTS.md` directs agents to invoke `.claude/skills/`, ensure equivalent instructions are documented directly in `AGENTS.md` or mapped to Antigravity's skills directory to prevent review rejections due to missed conventions.
+### The OpenCode engine
+
+`engine`, `writer_engine` or `reviewer_engine = "opencode"` runs sessions with `opencode run --format json` (any model OpenCode can reach, e.g. an OpenCode Go subscription: `writer_model = "opencode-go/deepseek-v4.1-flash"`). Every session:
+- runs in its worktree through `--dir` and `PWD` (OpenCode ignores the process cwd);
+- loads the OpenCode `ralph-guard` plugin and runs with sharing and auto-update off (`OPENCODE_CONFIG_CONTENT`); without the plugin file the session never starts, and a session whose plugin did not report loading (OpenCode skips a broken plugin silently) is discarded;
+- drops every inherited `OPENCODE_*` variable and runs with **project config off** (`OPENCODE_DISABLE_PROJECT_CONFIG`): a repo's `opencode.json` and `.opencode/` (plugins, agents, permissions) are ignored, since a worker could write them. The repo's `AGENTS.md` (else `CLAUDE.md`) is loaded explicitly;
+- as a reviewer, runs one of the worker bundle's agents (`ralph-guard:<name>`) defined on the fly as an OpenCode agent with edits and subagents denied; a review that fell back to another agent is discarded. Other review agents are refused at preflight, and so is an OpenCode reviewer without `reviewer_model` (or `model`): the agents' pinned Claude model means nothing to OpenCode.
+
+The plugin is tested with `bun test worker-bundle/opencode` (Bun is what OpenCode runs on). Usage-limit detection reads OpenCode `error` events (rate limit, quota, HTTP 429), matched loosely, so check the first real limit in `run.log`. OpenCode itself retries limit errors and waits out a provider's `retry-after` silently: a long reset can surface as a session timeout instead of a usage limit.
+
+> **Note on engine-specific skills in target repos**: When running with Antigravity or OpenCode as writer (`writer_engine = "antigravity"` or `"opencode"`), note that `agy` and `opencode` do not automatically load Claude Code-specific plugin skills (`.claude/skills/`). If a target repository's `AGENTS.md` directs agents to invoke `.claude/skills/`, ensure equivalent instructions are documented directly in `AGENTS.md` or mapped to Antigravity's skills directory to prevent review rejections due to missed conventions.
 
 ## Install as a Claude Code plugin
 
@@ -132,8 +142,8 @@ $EDITOR .ralph-gh.toml
 - `reviewer_agent`, `ticket_gate_agent` — the agents the final review and the ticket gate run as
 - `doc_files` — docs that must stay in sync with behavior (e.g. `["README.md"]`); implementer and fix sessions get one pointer line naming them, never their content
 - `session_timeout` — seconds before a hung session is killed (default 7200)
-- `engine` — agent execution engine (`"claude"` or `"antigravity"`; default `"claude"`)
-- `writer_engine`, `reviewer_engine` — customize engine by role (e.g. `writer_engine = "antigravity"`, `reviewer_engine = "claude"`)
+- `engine` — agent execution engine (`"claude"`, `"antigravity"` or `"opencode"`; default `"claude"`)
+- `writer_engine`, `reviewer_engine` — customize engine by role (e.g. `writer_engine = "opencode"`, `reviewer_engine = "claude"`)
 - `model` — model for writing sessions (reviewers stay on their pinned model)
 - `writer_model`, `reviewer_model` — customize models by role (e.g. `writer_model = "gemini-2.5-pro"`, `reviewer_model = "claude-opus-4"`)
 - `yolo_allowlist` — regexes of files allowed to auto-merge in `yolo` mode. Entries are Python regexes matched with `re.search`, i.e. **unanchored**: `README\.md` also matches `docs/README.md`. Anchor them with `^` (and `$`), e.g. `^README\.md$`
