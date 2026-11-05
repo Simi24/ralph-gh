@@ -74,3 +74,24 @@ export function absolute(path: string, cwd: string): string {
   }
   return `/${parts.join('/')}`
 }
+
+const OPENCODE_FILE_TOOLS = new Set(['write', 'edit', 'multiedit'])
+const OPENCODE_PATCH_TOOLS = new Set(['apply_patch', 'patch'])
+const PATCH_TARGET = /^\s*\*\*\* (?:Add File|Update File|Delete File|Move to):(.*)$/gm
+
+/**
+ * The files an OpenCode tool call writes, as the call names them: undefined for a tool that
+ * writes no file, [] when a file tool names none (the caller refuses that, fail closed).
+ */
+export function opencodeWrites(tool: string, args: Record<string, unknown>): string[] | undefined {
+  if (OPENCODE_FILE_TOOLS.has(tool)) {
+    const path = args.filePath
+    return typeof path === 'string' && path ? [path] : []
+  }
+  if (OPENCODE_PATCH_TOOLS.has(tool)) {
+    const patch = args.patchText
+    if (typeof patch !== 'string') return []
+    return [...patch.matchAll(PATCH_TARGET)].map(m => (m[1] ?? '').trim()).filter(Boolean)
+  }
+  return undefined
+}

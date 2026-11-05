@@ -108,6 +108,16 @@ class LoadConfigTest(unittest.TestCase):
         self.assertEqual(config.resolved_writer_model, "gemini-2.5-flash")
         self.assertEqual(config.resolved_reviewer_model, "claude-opus-4")
 
+        # OpenCode writes, Claude reviews; provider/model ids are accepted
+        config = self.load(
+            'verify_commands = ["x"]\n'
+            'writer_engine = "opencode"\n'
+            'reviewer_engine = "claude"\n'
+            'writer_model = "opencode-go/deepseek-v4.1-flash"\n'
+        )
+        self.assertEqual(config.resolved_writer_engine, "opencode")
+        self.assertEqual(config.resolved_writer_model, "opencode-go/deepseek-v4.1-flash")
+
         # Invalid engines are refused
         for key in ("engine", "writer_engine", "reviewer_engine"):
             with self.subTest(key=key), self.assertRaises(ConfigError):

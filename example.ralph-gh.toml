@@ -59,18 +59,19 @@ session_timeout = 7200
 # behavior: ..."), never their content. Default: none.
 doc_files = ["README.md"]
 
-# Agent engine configuration. Supported engines: "claude" | "antigravity".
+# Agent engine configuration. Supported engines: "claude" | "antigravity" | "opencode".
 # Default is "claude". You can configure a single engine for all sessions, or split
-# by role (e.g. implement with Antigravity, review with Claude Code).
+# by role (e.g. implement with OpenCode, review with Claude Code). With OpenCode as
+# reviewer, reviewer_agent and ticket_gate_agent must be the bundle's (ralph-guard:<name>).
 # engine = "claude"
-# writer_engine = "antigravity"
+# writer_engine = "opencode"
 # reviewer_engine = "claude"
 
 # Model configuration. `model` applies to writing sessions by default.
 # You can also customize `writer_model` and `reviewer_model` separately.
 # Reviewer sessions with a pinned agent definition (like Opus) respect their agent pin unless unpinned.
 # model = "claude-sonnet-5"
-# writer_model = "gemini-2.5-pro"
+# writer_model = "opencode-go/deepseek-v4.1-flash"   # OpenCode ids are provider/model
 # reviewer_model = "claude-opus-4"
 
 # yolo autonomy only (see README): Python regexes matched with re.search

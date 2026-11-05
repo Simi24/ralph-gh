@@ -65,6 +65,10 @@ class FakeEnv:
         self.sleeps += 1
 
 
+BUNDLE_AGENTS = {"reviewer_agent": "ralph-guard:ralph-gate-reviewer", "ticket_gate_agent": "ralph-guard:ralph-ticket-gate"}
+BUNDLE_AGENTS_DIR = Path(__file__).resolve().parent.parent / "worker-bundle" / "agents"
+
+
 def make_config(**extra: object) -> Config:
     return parse_config({"verify_commands": ["true"], "reviewer_agent": "plugin:reviewer", "ticket_gate_agent": "plugin:gate", **extra})
 
@@ -122,6 +126,23 @@ class PreflightTest(unittest.TestCase):
         # Even with a bundle problem, pure antigravity passes bundle check
         env = FakeEnv(tools={"gh", "git", "agy"}, bundle_problem="broken")
         self.assertIsNone(preflight(agy_config, env))
+
+    def test_opencode_engine_tool_checks(self) -> None:
+        config = make_config(writer_engine="opencode", reviewer_engine="claude")
+        self.assertIsNone(preflight(config, FakeEnv(tools={"gh", "git", "opencode", "claude"})))
+        self.assertIn("tool opencode", self.failure(FakeEnv(tools={"gh", "git", "claude"}), config))
+        pure = make_config(engine="opencode", **BUNDLE_AGENTS)
+        env = FakeEnv(tools={"gh", "git", "opencode"}, bundle_problem="broken", agent_dirs=[BUNDLE_AGENTS_DIR])
+        self.assertIsNone(preflight(pure, env))
+
+    def test_opencode_reviews_only_with_the_bundle_agents(self) -> None:
+        tools = {"gh", "git", "opencode"}
+        for key in ("reviewer_agent", "ticket_gate_agent"):
+            with self.subTest(key):
+                config = make_config(engine="opencode", **{**BUNDLE_AGENTS, key: "other-plugin:reviewer"})
+                self.assertIn("opencode", self.failure(FakeEnv(tools=tools, agent_dirs=[BUNDLE_AGENTS_DIR]), config))
+        writer_only = make_config(writer_engine="opencode", reviewer_engine="claude", reviewer_agent="other-plugin:reviewer")
+        self.assertIsNone(preflight(writer_only, FakeEnv(tools=tools | {"claude"})))
 
     def test_ralph_files_untracked_do_not_dirty_the_tree(self) -> None:
         env = FakeEnv(status=["?? .ralph-gh.toml", "?? .ralph-gh.config", "?? .ralph-gh/"])

@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from conductor.antigravity_agents import AntigravityAgents, build_command
-from conductor.markers import OutcomeKind
+from conductor.markers import OutcomeKind, outcome_of
 from conductor.ports import SessionRequest
 from conductor.sessions import SessionRegistry, Stopped
 
@@ -25,6 +25,8 @@ STUB = textwrap.dedent(
         child = subprocess.Popen(["sleep", "60"])
         open(sys.argv[0] + ".child", "w").write(str(child.pid))
         time.sleep(60)
+    if prompt.startswith("MANIFEST"):
+        open("package.json", "w").write("{}")
     if prompt.startswith("LIMIT"):
         print(json.dumps({"status": "ERROR", "error": "Quota exceeded. Resets at 9am"}))
         sys.exit(1)
@@ -81,6 +83,12 @@ class AntigravityAgentsTest(unittest.TestCase):
         seen = json.loads(result.text)
         self.assertIn("--model", seen["argv"])
         self.assertEqual(seen["argv"][seen["argv"].index("--model") + 1], "gemini-default")
+
+    def test_a_manifest_edit_blocks_the_session(self) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=self.dir, check=True)
+        result = self.agents.start(self.request("MANIFEST"))
+        self.assertIn("package.json", result.text)
+        self.assertEqual(outcome_of(result).kind, OutcomeKind.BLOCKED)
 
     def test_usage_limit_is_reported(self) -> None:
         result = self.agents.start(self.request("LIMIT"))

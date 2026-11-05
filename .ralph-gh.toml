@@ -9,6 +9,7 @@ verify_commands = [
   "claude plugin test .",
   "claude plugin validate worker-bundle",
   "claude plugin test worker-bundle",
+  "bun test worker-bundle/opencode",
 ]
 
 branch_prefix = "feat"

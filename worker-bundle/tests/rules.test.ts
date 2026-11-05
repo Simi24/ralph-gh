@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { absolute, checkBash, checkWrite } from '../hooks/rules'
+import { absolute, checkBash, checkWrite, opencodeWrites } from '../hooks/rules'
 
 const refused = [
   'git push origin feat/x',
@@ -93,4 +93,32 @@ test('every refusal tells the session what to do instead', () => {
     checkWrite('/w/package.json', ['/w'], false),
   ]
   for (const reason of reasons) expect(reason).toMatch(/RALPH:(DONE|BLOCKED)/)
+})
+
+test('opencode file tools name the files they write', () => {
+  expect(opencodeWrites('write', { filePath: '/w/a.py', content: 'x' })).toEqual(['/w/a.py'])
+  expect(opencodeWrites('edit', { filePath: 'src/a.py' })).toEqual(['src/a.py'])
+  expect(opencodeWrites('multiedit', { filePath: '/w/a.py' })).toEqual(['/w/a.py'])
+  expect(opencodeWrites('write', {})).toEqual([])
+  expect(opencodeWrites('read', { filePath: '/etc/passwd' })).toBeUndefined()
+  expect(opencodeWrites('bash', { command: 'ls' })).toBeUndefined()
+})
+
+test('opencode patches name every file they add, update, delete or move to', () => {
+  const patch = [
+    '*** Begin Patch',
+    '*** Add File: new.py',
+    '+print(1)',
+    '*** Update File: src/a.py',
+    '*** Move to: /etc/evil',
+    '@@',
+    '-a',
+    '+b',
+    '  *** Delete File: package.json',
+    '*** End Patch',
+  ].join('\n')
+  expect(opencodeWrites('apply_patch', { patchText: patch })).toEqual(['new.py', 'src/a.py', '/etc/evil', 'package.json'])
+  expect(opencodeWrites('patch', { patchText: patch })).toHaveLength(4)
+  expect(opencodeWrites('apply_patch', { patchText: '*** Begin Patch\n*** End Patch' })).toEqual([])
+  expect(opencodeWrites('apply_patch', {})).toEqual([])
 })

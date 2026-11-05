@@ -11,7 +11,7 @@ _AGENT = re.compile(r"^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$")
 _REF = re.compile(r"^[A-Za-z0-9._/-]+$")
 _MODEL = re.compile(r"^[A-Za-z0-9._/:\[\]-]+$")  # model ids carry ':' and '[1m]'
 AUTONOMY_MODES = ("halt-each-pr", "respect-hitl-arch", "yolo")
-ENGINES = ("claude", "antigravity")
+ENGINES = ("claude", "antigravity", "opencode")
 _RUN_FIELDS = {"prd", "repo_root", "state_root", "autonomy"}
 
 
