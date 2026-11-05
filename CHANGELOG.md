@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0](https://github.com/Simi24/ralph-gh/compare/v2.1.0...v2.2.0) (2026-11-05)
+
+
+### Features
+
+* ✨ add the OpenCode engine, guarded by an OpenCode ralph-guard plugin ([#105](https://github.com/Simi24/ralph-gh/issues/105)) ([ff46625](https://github.com/Simi24/ralph-gh/commit/ff46625f2ed65542556f222c21822b3d46494e85))
+
 ## [2.1.0](https://github.com/Simi24/ralph-gh/compare/v2.0.0...v2.1.0) (2026-10-24)
 
 
